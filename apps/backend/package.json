@@ -1,0 +1,29 @@
+{
+  "name": "backend",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/jsonwebtoken": "^9.0.10"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts "
+  },
+  "dependencies": {
+    "@fastify/swagger": "^9.7.0",
+    "@fastify/type-provider-json-schema-to-ts": "^5.0.0",
+    "@kubernetes/client-node": "^1.4.0",
+    "@scalar/fastify-api-reference": "^1.60.0",
+    "@sky/db": "workspace:*",
+    "argon2": "^0.44.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.8.5",
+    "fastify-type-provider-zod": "^6.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "zod": "^4.4.3"
+  }
+}
