@@ -50,7 +50,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./services/agent/Dockerfile
+          file: ./services/agentServer/Dockerfile
           push: true
           tags: |
             tarunsingh28/sky-agent:latest
@@ -60,7 +60,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./services/recovery-cron/Dockerfile
+          file: ./services/recovery_cron/Dockerfile
           push: true
           tags: |
             tarunsingh28/sky-recovery-cron:latest
