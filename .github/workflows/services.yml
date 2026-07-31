@@ -5,9 +5,9 @@ on:
   push:
     branches:
       - main
-    paths:
-      - services
-      - packages
+    # paths:
+    #   - services
+    #   - packages
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
