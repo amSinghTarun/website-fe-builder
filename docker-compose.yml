@@ -75,7 +75,6 @@ services:
     volumes:
       - ~/.config/gcloud/application_default_credentials.json:/app/gcp-creds.json:ro
       - ~/.kube:/root/.kube:ro
-      - ~/Downloads/google-cloud-sdk/bin/gke-gcloud-auth-plugin:/usr/bin/gke-gcloud-auth-plugin:ro
       - ~/.config/gcloud:/tmp/gcloud
     environment:
       CLOUDSDK_CONFIG: /tmp/gcloud

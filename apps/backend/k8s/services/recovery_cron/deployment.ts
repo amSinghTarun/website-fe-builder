@@ -22,6 +22,7 @@ export const recoveryDeploymentSpec = (projectId: string) => ({
         },
       },
       spec: {
+        serviceAccountName: "K8S_SERVICE_ACCOUNT",
         containers: [
           {
             name: `${projectId}-recovery-cron`,

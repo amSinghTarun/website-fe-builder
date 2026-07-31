@@ -33,7 +33,7 @@
 #       - name: Build and push backend
 #         uses: docker/build-push-action@v7
 #         with:
-#           # file	String	Path to the Dockerfile. (default {context}/Dockerfile)
+#          file	String	Path to the Dockerfile. (default {context}/Dockerfile)
 #           context: .
 #           file: ./apps/backend/Dockerfile
 #           push: true

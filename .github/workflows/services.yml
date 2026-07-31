@@ -3,6 +3,8 @@ run-name: build and push servie and packages images
 
 on:
   push:
+    branches:
+      - main
     paths:
       - services
       - packages
