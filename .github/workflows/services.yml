@@ -38,8 +38,8 @@ jobs:
           file: ./services/wsServer/Dockerfile
           push: true
           tags: |
-            tarunsingh28/sky-wsServer:latest
-            tarunsingh28/wsServer:${{ github.sha }}
+            tarunsingh28/sky-ws-server:latest
+            tarunsingh28/ws-server:${{ github.sha }}
 
       - name: Build and push agent
         uses: docker/build-push-action@v7
