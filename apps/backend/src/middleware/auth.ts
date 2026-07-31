@@ -1,24 +1,22 @@
 import { verifyJwt } from "../helpers";
 import { type FastifyRequest, type HookHandlerDoneFunction } from "fastify";
 
-export const checkAuth = async (
-  request: FastifyRequest,
-  done: HookHandlerDoneFunction,
-) => {
+export const checkAuth = async (request: FastifyRequest) => {
   try {
-    let token = request.headers.authorization?.split("Bearer ")[1];
+    let token = request.cookies.token;
+
+    console.log("Cookie token", token);
 
     if (!token)
       throw new Error(
-        "Authorization header mission or nor properply formatted",
+        "Authorization header mission or not properply formatted",
       );
 
-    const { userId } = verifyJwt(token);
+    const { username, userId } = verifyJwt(token);
 
+    request.username = username;
     request.userId = userId;
-
-    done();
-  } catch (error: any) {
-    done(error as Error);
+  } catch (error) {
+    throw error;
   }
 };

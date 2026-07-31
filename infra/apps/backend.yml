@@ -1,0 +1,68 @@
+# # this will be a github action and secret
+# apiVersion: v1
+# kind: Secret
+# metadata: 
+#   name: backend-secrets
+#   namespace: default
+# type: Opaque
+# data:
+#   # admin
+#   DATABASE_URL: <DATABASE_URL>
+#   # secret123
+#   GCP_PROJECT_ID: <GCP_PROJECT_ID>
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+serviceAccount: agent-k8s-sa
+metadata:
+  name: sky-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sky-backend
+  template:
+    metadata:
+      labels:
+        app: sky-backend
+    spec:
+      containers:
+        - name: backend
+          image: HERE COMES THE DOCKERHUB IMAGE BACKEND
+          ports:  
+            - containerPort: 3000
+          env: 
+            - name: DATABASE_URL
+              valueFrom: 
+                secretKeyRef: 
+                  name: sky-secrets
+                  key: DATABASE_URL
+            - name: GCP_PROJECT_ID
+              valueFrom: 
+                secretKeyRef: 
+                  name: sky-secrets
+                  key: GCP_PROJECT_ID
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgres/data
+              subPath: postgres
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sky-pvc
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec: 
+  kind: ClusterIP
+  selector:
+    app: sky-backend
+  ports:
+    - port: 3000
+      targetPort: 3000

@@ -1,0 +1,17 @@
+export const getPvcSpec = (projectId: string) => {
+  return {
+    apiVersion: "v1",
+    kind: "PersistentVolumeClaim",
+    metadata: {
+      name: `${projectId}-pvc`,
+    },
+    spec: {
+      accessModes: ["ReadWriteOnce"],
+      resources: {
+        requests: {
+          storage: "500Mi",
+        },
+      },
+    },
+  };
+};

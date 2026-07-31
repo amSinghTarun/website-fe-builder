@@ -1,0 +1,91 @@
+name: lovable-services
+services: 
+  postgres:
+    image: postgres
+    restart: always
+    ports: 
+      - 5432:5432
+    environment: 
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secret123
+      POSTGRES_DB: mydb
+    command: ["postgres"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d mydb"]
+      interval: 5s 
+      timeout: 2s 
+      retries: 5
+
+  ws-server:
+    build: 
+      context: ./
+      dockerfile: ./services/wsServer/Dockerfile
+    restart: always
+    ports:
+      - 8080:8080
+
+  migration:
+    build:
+      context: .
+      dockerfile: ./packages/db/Dockerfile
+    environment:
+      DATABASE_URL : "postgres://admin:secret123@postgres:5432/mydb"
+    restart: no
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  recovery-cron:
+    build:
+      context: ./
+      dockerfile: ./services/recovery_cron/Dockerfile
+    environment: 
+      DATABASE_URL : "postgresql://admin:secret123@postgres:5432/mydb"
+      PROJECT_ID: "database-project-id-of-user"
+      GOOGLE_APPLICATION_CREDENTIALS: "/app/gcp-creds.json"
+    volumes:
+      - "${HOME}/.config/gcloud/application_default_credentials.json:/app/gcp-creds.json:ro"
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
+  agent-server:
+    build: 
+      context: ./
+      dockerfile: ./services/agentServer/Dockerfile
+    volumes:
+      - ~/.config/gcloud/application_default_credentials.json:/app/gcp-creds.json:ro
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-creds.json
+      DATABASE_URL : "postgresql://admin:secret123@postgres:5432/mydb"
+      GCP_PROJECT_ID: "project-b955da7b-8f9e-4324-af2"
+    restart: always
+    ports:
+      - 3000:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sky-backend:
+    build:
+      context: ./
+      dockerfile: ./apps/backend/Dockerfile
+    volumes:
+      - ~/.config/gcloud/application_default_credentials.json:/app/gcp-creds.json:ro
+      - ~/.kube:/root/.kube:ro
+      - ~/Downloads/google-cloud-sdk/bin/gke-gcloud-auth-plugin:/usr/bin/gke-gcloud-auth-plugin:ro
+      - ~/.config/gcloud:/tmp/gcloud
+    environment:
+      CLOUDSDK_CONFIG: /tmp/gcloud
+      NODE_TLS_REJECT_UNAUTHORIZED: 0
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-creds.json
+      DATABASE_URL : "postgresql://admin:secret123@postgres:5432/mydb"
+      GCP_PROJECT_ID: "project-b955da7b-8f9e-4324-af2"
+    restart: always
+    ports:
+      - 3001:3001
+    depends_on:
+      postgres:
+        condition: service_healthy

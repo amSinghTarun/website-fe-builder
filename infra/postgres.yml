@@ -1,0 +1,62 @@
+# # this will be a github action and secret
+# apiVersion: v1
+# kind: Secret
+# metadata: 
+#   name: sky-secrets
+#   namespace: default
+# type: Opaque
+# data:
+#   # admin
+#   POSTGRES_USER: YWRtaW4=
+#   # secret123
+#   POSTGRES_PASSWORD: c2VjcmV0MTIz
+#   # mydb
+#   POSTGRES_DB: bXlkYg==
+
+---
+
+# stateful set
+
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: sky-postgres
+spec: 
+  replicas: 1
+  selector: 
+    app: sky-postgres
+  template: 
+    metadata:
+      labels: 
+        app: sky-postgres
+    spec: 
+      containers:
+      - name: sky-postgres-db
+        image: postgres:16-alpine
+        ports:
+          - containerPort: 5432
+        # envFrom: 
+        #   secretRef:
+        #     name: sky-secrets
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/postgres/data
+            subPath: postgres
+      volumes:
+        - name:  data
+          persistentVolumeClaim:
+            claimName: sky-pvc
+
+---
+
+apiversion: v1
+kind: Service
+metadata: 
+  name: postgres-service
+spec:
+  type: ClusterIP
+  selector:
+    app: sky-postgres
+  ports:
+    - port: 5432
+      targerPort: 5432

@@ -1,0 +1,61 @@
+# # For auth
+# # https://github.com/google-github-actions/auth/blob/main/README.md#direct-wif
+
+# name: Deploy 
+# run-name: Deploy the k8s
+
+# on:
+#   push:
+#     paths:
+#       - infra
+
+# concurrency:
+#   group: ${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: true
+
+# jobs:
+#   job_1:
+#     runs-on: ubuntu-latest
+#     steps:
+
+#       - uses: 'actions/checkout@v4'
+
+#       - name: Login to Docker Hub
+#         uses: docker/login-action@v4
+#         with:
+#           username: ${{ secrets.DOCKERHUB_USERNAME }}
+#           password: ${{ secrets.DOCKERHUB_TOKEN }}
+        
+#       - name: Authenticate to Google Cloud
+#         uses: 'google-github-actions/auth@v2'
+#         with:
+#           project_id: ${{ secrets.GCP_PROJECT_ID }}
+#           workload_identity_provider: 'projects/232010267405/locations/global/workloadIdentityPools/github/providers/my-repo'
+
+#       - name: Get GKE Credentials
+#         uses: 'google-github-actions/get-gke-credentials@v2'
+#         with:
+#           cluster_name: 'hundred-x-course'
+#           location: 'asia-southeast1'
+
+#       # Create the secrets in k8s for other deployments to use
+#       - name: Create secret in main cluster
+#         run: |
+#           kubectl create secret generic sky-secrets --namespace=default \
+#             --from-literal=DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+#             --from-literal=GCP_PROJECT_ID="${{ secrets.GCP_PROJECT_ID }}" \
+#             --from-literal=POSTGRES_USER="${{ secrets.POSTGRES_USER }}" \
+#             --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+#             --from-literal=POSTGRES_DB="${{ secrets.POSTGRES_DB }}" \
+#             --dry-run=client -o yaml | kubectl apply -f -
+
+#         # deploy the docker images to k8s
+#       - name: Deploy apps
+#         run: |
+#           kubectl apply -f ./infra/apps/postgres
+#           kubectl apply -f ./infra/apps/pvc
+#           kubectl apply -f ./infra/apps/ingress
+#           kubectl apply -f ./infra/apps/backend
+#           kubectl apply -f ./infra/apps/frontend
+#           kubectl apply -f ./infra/apps/dynamic_nginx/deployment
+        
