@@ -44,7 +44,7 @@ jobs:
           push: true
           tags: |
             tarunsingh28/sky-ws-server:latest
-            tarunsingh28/ws-server:${{ github.sha }}
+            tarunsingh28/sky-ws-server:${{ github.sha }}
 
       - name: Build and push agent
         uses: docker/build-push-action@v7
@@ -54,7 +54,7 @@ jobs:
           push: true
           tags: |
             tarunsingh28/sky-agent:latest
-            tarunsingh28/agent:${{ github.sha }}
+            tarunsingh28/sky-agent:${{ github.sha }}
 
       - name: Build and push recovery-cron
         uses: docker/build-push-action@v7
@@ -64,5 +64,5 @@ jobs:
           push: true
           tags: |
             tarunsingh28/sky-recovery-cron:latest
-            tarunsingh28/recovery-cron:${{ github.sha }}
+            tarunsingh28/sky-recovery-cron:${{ github.sha }}
 
