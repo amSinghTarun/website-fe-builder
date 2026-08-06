@@ -64,10 +64,10 @@ jobs:
         # deploy the docker images to k8s
       - name: Deploy apps
         run: |
-          kubectl apply -f ./infra/apps/pvc
-          kubectl apply -f ./infra/apps/postgres
-          kubectl apply -f ./infra/apps/ingress
-          kubectl apply -f ./infra/apps/dynamic_nginx/deployment
+          kubectl apply -f ./infra/pvc
+          kubectl apply -f ./infra/postgres
+          kubectl apply -f ./infra/ingress
+          kubectl apply -f ./infra/dynamic_nginx/deployment
         # kubectl apply -f ./infra/apps/backend
         # kubectl apply -f ./infra/apps/frontend
 
