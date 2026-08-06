@@ -41,7 +41,6 @@ jobs:
           token_format: "access_token"
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
           
       # get kubernetes creds so that kubectl work
       - name: Get GKE Credentials
@@ -49,7 +48,7 @@ jobs:
         with:
           cluster_name: 'hundred-x-course'
           location: 'asia-southeast1'
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
 
       # Create the secrets in k8s for other deployments to use
       - name: Create secret in main cluster
