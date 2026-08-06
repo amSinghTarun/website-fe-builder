@@ -9,8 +9,8 @@ run-name: Deploy Kubernetes manifests
 
 on:
   push:
-    paths:
-      - infra
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
