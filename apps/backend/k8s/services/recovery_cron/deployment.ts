@@ -50,7 +50,7 @@ export const recoveryDeploymentSpec = (projectId: string) => ({
         volumes: [
           {
             name: `${projectId}-volume`,
-            persistentVolumeClaim: {
+            PersistentVolumeClaim: {
               claimName: `${projectId}-pvc`,
             },
           },
