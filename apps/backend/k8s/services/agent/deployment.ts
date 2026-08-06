@@ -67,7 +67,7 @@ export const agentDeploymentSpec = (projectId: string) => ({
         volumes: [
           {
             name: `${projectId}-volume`,
-            PersistentVolumeClaim: {
+            persistentVolumeClaim: {
               claimName: `${projectId}-pvc`,
             },
           },

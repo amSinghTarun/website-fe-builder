@@ -52,10 +52,9 @@ data:
 
 apiVersion: apps/v1
 kind: Deployment
-metadata: 
+metadata:
   name: nginx-proxy
-  namespace: default
-spec: 
+spec:
   replicas: 1
   selector:
     matchLabels:
@@ -68,15 +67,15 @@ spec:
       containers:
         - name: nginx
           image: nginx:lts-alpine
-          ports: 
+          ports:
             - containerPort: 80
           volumeMounts:
-            - name:  nginx-conf
-              mountPath: /etc/nginx/conf.d
-          volumes:
             - name: nginx-conf
-              configMap:
-                name: nginx-proxy-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: nginx-proxy-conf
 
 ---
 

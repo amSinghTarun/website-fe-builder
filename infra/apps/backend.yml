@@ -50,7 +50,7 @@ spec:
               subPath: postgres
       volumes:
         - name: data
-          PersistentVolumeClaim:
+          persistentVolumeClaim:
             claimName: sky-pvc
 
 ---

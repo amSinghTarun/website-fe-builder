@@ -57,7 +57,7 @@ export const workspaceDeploymentSpec = (
           volumes: [
             {
               name: `${projectId}-volume`,
-              PersistentVolumeClaim: {
+              persistentVolumeClaim: {
                 claimName: `${projectId}-pvc`,
               },
             },
