@@ -1,10 +1,10 @@
 import { type FunctionDeclaration } from "@google/genai";
 import { execSync } from "child_process";
-import { $Enums as prismaEnums } from "@sky/db";
+import { Tools } from "../types/tools";
 
 export let bashTool = {
   executeBash: {
-    identifier: prismaEnums.ToolCall.WAITING_FOR_SUB_AGENT,
+    identifier: Tools.EXECUTE_BASH,
     declaration: {
       name: "executeBash",
       description: "execute any bash command",

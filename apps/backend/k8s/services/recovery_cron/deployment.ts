@@ -22,11 +22,11 @@ export const recoveryDeploymentSpec = (projectId: string) => ({
         },
       },
       spec: {
-        serviceAccountName: "K8S_SERVICE_ACCOUNT",
+        serviceAccountName: "k8s-service-account",
         containers: [
           {
             name: `${projectId}-recovery-cron`,
-            image: `HERE will be my agent image in docker hub`,
+            image: `tarunsingh28/sky-recovery-cron`,
             env: [
               { name: "PROJECT_ID", value: projectId },
               {

@@ -8,7 +8,7 @@
 # docker run -e PROJECT_ID="project-b955da7b-8f9e-4324-af2" -e GOOGLE_APPLICATION_CREDENTIALS="/app/gcp-creds.json" -v \
 #  "$HOME/.config/gcloud/application_default_credentials.json:/app/gcp-creds.json:ro" -e DATABASE_URL="postgres://postgres:mysecret123@localhost:5432/postgres" recovery-app:lates
 
-FROM oven/bun:1-alpine
+FROM oven/bun:1
 
 WORKDIR /app
 

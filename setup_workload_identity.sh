@@ -6,11 +6,11 @@ set -e
 # ==========================================
 # CONFIGURATION - Change these values
 # ==========================================
-K8S_SA_NAME="agent-k8s-sa"
+K8S_SA_NAME="k8s-service-account"
 K8S_NAMESPACE="default"
 
-GCP_PROJECT_ID="YOUR_GCP_PROJECT_ID"
-GCP_SA_EMAIL="YOUR_GCP_SERVICE_ACCOUNT@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+GCP_PROJECT_ID="project-b955da7b-8f9e-4324-af2"
+GCP_SA_EMAIL="sky-backend-gcp-sa@project-b955da7b-8f9e-4324-af2.iam.gserviceaccount.com"
 # ==========================================
 
 echo "=================================================="

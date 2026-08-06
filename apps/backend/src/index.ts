@@ -13,16 +13,13 @@ import {
   hashPassword,
   createJwt,
   verifyHashedPassword,
-  k8sAppsApi,
-  k8sCoreApi,
+  spinupK8sResources,
 } from "./helpers";
 import { checkAuth } from "./middleware";
 import "dotenv/config";
-import * as k8sConfs from "../k8s";
 import { customAlphabet } from "nanoid";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { resolveModuleName } from "typescript";
 
 const PORT = 3001;
 const app = fastify({
@@ -226,6 +223,34 @@ app.get(
   },
 );
 
+app.get(
+  "/chat",
+  {
+    onRequest: checkAuth,
+    schema: {
+      querystring: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    console.log(request.query.projectId);
+
+    let chatHistory = await prisma.conversationHistory.findMany({
+      where: {
+        projectId: request.query.projectId as string,
+        type: "TEXT_MESSAGE",
+      },
+    });
+    console.log(chatHistory);
+    return reply.code(200).send({
+      status: "success",
+      message: "chat of specified project",
+      data: chatHistory,
+    });
+  },
+);
+
 app.post(
   "/createProject",
   {
@@ -246,8 +271,6 @@ app.post(
       },
     });
 
-    console.log(" -------------------------------------- Created TWICE");
-
     return reply
       .code(201)
       .send({ status: "success", message: "project created", data: project });
@@ -266,11 +289,6 @@ app.post(
     },
   },
   async (request, reply) => {
-    // if not create the pods required.
-    // But how do you check the pods running?
-
-    console.log("Request is here 0");
-
     const { id: projectId, library: feLibrary } = await prisma.project.update({
       where: {
         id: request.body.projectId,
@@ -280,50 +298,18 @@ app.post(
       },
     });
 
-    // const k8sAppsApi = kc.makeApiClient(AppsV1Api);
-    // const k8sCoreApi = kc.makeApiClient(CoreV1Api);
-
-    console.log("Request is here 1");
-
-    // create pvc
-    const volume = await k8sCoreApi.createNamespacedPersistentVolumeClaim({
-      namespace: "default",
-      body: k8sConfs.getPvcSpec(projectId),
-    });
-
-    // create the deployments
-    const workspace = await k8sAppsApi.createNamespacedDeployment({
-      namespace: "default",
-      body: k8sConfs.workspaceDeploymentSpec(feLibrary, projectId),
-    });
-    const recovery_cron = await k8sAppsApi.createNamespacedDeployment({
-      namespace: "default",
-      body: k8sConfs.recoveryDeploymentSpec(projectId),
-    });
-    const ws = await k8sAppsApi.createNamespacedDeployment({
-      namespace: "default",
-      body: k8sConfs.wsServerDeploymentSpec(projectId),
-    });
-    const agent = await k8sAppsApi.createNamespacedDeployment({
-      namespace: "default",
-      body: k8sConfs.agentDeploymentSpec(projectId),
-    });
-
-    // create services
-    const wsServerClusterIpService = await k8sCoreApi.createNamespacedService({
-      namespace: "default",
-      body: k8sConfs.wsServerServiceSpec(projectId),
-    });
-    const agentClusterIpService = await k8sCoreApi.createNamespacedService({
-      namespace: "default",
-      body: k8sConfs.agentServiceSpec(projectId),
-    });
-    const workspacetClusterIpService = await k8sCoreApi.createNamespacedService(
-      {
-        namespace: "default",
-        body: k8sConfs.workspaceServiceSpec(projectId),
+    await prisma.conversationHistory.create({
+      data: {
+        contents: request.body.initialPrompt,
+        from: "USER",
+        type: "TEXT_MESSAGE",
+        projectId: request.body.projectId,
       },
-    );
+    });
+
+    await spinupK8sResources(feLibrary, `sky-${projectId}`);
+
+    // need to return the url of server so that we can display frontend as per it
 
     return reply
       .code(201)
@@ -331,9 +317,45 @@ app.post(
   },
 );
 
-app.setErrorHandler((error: any, _, res) => {
+app.get(
+  "/getServerUrl",
+  {
+    onRequest: checkAuth,
+  },
+  async (request, reply) => {
+    // send the url of the server running in k8s, for user to see the display
+  },
+);
+
+app.get(
+  "/sendUserMessage",
+  {
+    onRequest: checkAuth,
+  },
+  async (request, reply) => {
+    // I should call the api of agent and send message there but how to call the reverse proxy api for agent
+    // send the changes files as well, so that browser can store them in state
+  },
+);
+
+app.get(
+  "/getServerFilesAndCode",
+  {
+    onRequest: checkAuth,
+  },
+  async (request, reply) => {
+    // expose an api from the agent to get the code and files of the project, cache the files in browser,
+    // also send the changes files as well, so that browser can store them in state
+    //
+  },
+);
+
+app.get("/", {}, async (request, reply) => {});
+
+app.setErrorHandler((error: any, request, reply) => {
+  console.log("---------- ERROR IN BACKEND SERVER");
   console.log(error);
-  return res.code(error.code || 500).send({
+  return reply.code(error.statusCode || 500).send({
     status: "error",
     message: error.message || "Something went wrong",
   });

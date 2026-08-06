@@ -136,22 +136,25 @@ export class GeminiProvider {
       let subAgentResponse: PartListUnion = [];
       let hasToolCall = true;
 
-      // only store function calls for main agent and not for sub-agents
-      if (args.id == "1")
-        dbConverstaionId = await prisma.conversationHistory.create({
-          data: {
-            completed: false,
-            contents: args.message,
-            from: "USER",
-            projectId: this.projectId,
-            snapshotCaptured: false,
-            type: "TEXT_MESSAGE",
-            output: summary,
-          },
-          select: {
-            id: true,
-          },
-        });
+      // only store function calls for main agent and not for sub-agents - this is wrong,
+      // if we want to recover we need to store the sub-agent calls and also the directory they are working in
+      // (args.id == "1
+      dbConverstaionId = await prisma.conversationHistory.create({
+        data: {
+          completed: false,
+          contents: args.message,
+          from: "USER",
+          projectId: this.projectId,
+          snapshotCaptured: false,
+          type: "TEXT_MESSAGE",
+          output: summary,
+          agentId: args.id,
+          cwd: this.cwd,
+        },
+        select: {
+          id: true,
+        },
+      });
 
       let activeTaskPlan: string[] | null = null;
       let completedTaskIds = new Set<string>();
@@ -237,11 +240,16 @@ export class GeminiProvider {
                   continue;
                 }
 
-                const output = (await tool.executable(
-                  {
+                const toolArgs = {
+                  args: {
                     ...(functionCall.args as any),
                   },
-                  { cwd: this.cwd },
+                  context: { cwd: this.cwd },
+                };
+
+                const output = (await tool.executable(
+                  toolArgs.args,
+                  toolArgs.context,
                 )) as {
                   response: string;
                   yield?: {
@@ -252,22 +260,21 @@ export class GeminiProvider {
                   };
                 };
 
-                // Do Prisma Call Here
-                if (+args.id == 1)
-                  // only store function calls for main agent and not for sub-agents
-                  await prisma.conversationHistory.create({
-                    data: {
-                      contents: `${functionCall.args}`,
-                      from: "ASSISTANT",
-                      toolCall: tool.identifier,
-                      projectId: this.projectId,
-                      type: "TOOL_CALL",
-                      output: JSON.stringify({
-                        type: output.yield?.type,
-                        response: output.yield?.response,
-                      }),
-                    },
-                  });
+                // Prisma Call Here for the calls of LLM
+                await prisma.conversationHistory.create({
+                  data: {
+                    contents: JSON.stringify(toolArgs),
+                    from: "ASSISTANT",
+                    toolCall: tool.identifier.toString(),
+                    projectId: this.projectId,
+                    type: "TOOL_CALL",
+                    output: JSON.stringify({
+                      type: output.yield?.type,
+                      response: output.yield?.response,
+                    }),
+                    agentId: args.id,
+                  },
+                });
 
                 if (tool.declaration.name == "createSubAgent") {
                   let provisionOutput = output as {
@@ -349,10 +356,26 @@ export class GeminiProvider {
                     targetBranch: "main",
                     mainWorktreePath: this.cwd || process.cwd(),
                   })
-                    .then((reply: any) => {
+                    .then(async (reply: any) => {
                       resolveSubAgent(response.id, {
                         summary: response.summary,
                         ...reply,
+                      });
+                      await prisma.conversationHistory.create({
+                        data: {
+                          contents: JSON.stringify({
+                            args: {
+                              id: response.id,
+                              targetBranch: "main",
+                              mainWorktreePath: this.cwd || process.cwd(),
+                            },
+                          }),
+                          from: "LOOP",
+                          toolCall: "mergeWorkTree",
+                          projectId: this.projectId,
+                          type: "TOOL_CALL",
+                          agentId: args.id,
+                        },
                       });
                     })
                     .catch((error: any) => {
@@ -364,37 +387,37 @@ export class GeminiProvider {
             newMessage = functionCallResponses;
           }
 
-          if (
-            !hasToolCall &&
-            activeTaskPlan &&
-            completedTaskIds.size < activeTaskPlan.length &&
-            Object.keys(subAgents).length > 0
-          ) {
-            const remaining = activeTaskPlan.filter(
-              (id) => !completedTaskIds.has(id),
-            );
-            newMessage = [
-              {
-                text: `You still have ${remaining.length} unfinished task(s) from your plan (${remaining.join(", ")}). Continue working on them, or call informCompletedTaskFromTaskPlan / explain why they can't be completed.`,
-              },
-            ];
-            if (Object.keys(subAgents).length > 0) {
-              newMessage = [
-                ...newMessage,
-                {
-                  text: `You still have ${remaining.length} unfinished agents(s). Continue working on them, or call waitForSubAgent / explain why they can't be completed.`,
-                },
-              ];
-            }
-            hasToolCall = true; // force another turn instead of exiting
-          }
-
           args.handler.onChunk &&
             args.handler.onChunk({
               type: "message",
               response: response.text,
             });
           summary += ` ${response.text ?? ""}`;
+        }
+
+        if (
+          !hasToolCall &&
+          activeTaskPlan &&
+          completedTaskIds.size < activeTaskPlan.length
+        ) {
+          const remaining = activeTaskPlan.filter(
+            (id) => !completedTaskIds.has(id),
+          );
+          newMessage = [
+            ...newMessage,
+            {
+              text: `You still have ${remaining.length} unfinished task(s) from your plan (${remaining.join(", ")}). Continue working on them, or call informCompletedTaskFromTaskPlan / explain why they can't be completed.`,
+            },
+          ];
+          hasToolCall = true;
+        } else if (Object.keys(subAgents).length > 0) {
+          newMessage = [
+            ...newMessage,
+            {
+              text: `You still have ${Object.keys(subAgents).length} unfinished agents(s). Continue working on them, or call waitForSubAgent / explain why they can't be completed.`,
+            },
+          ];
+          hasToolCall = true;
         }
       }
 

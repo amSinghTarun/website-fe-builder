@@ -1,9 +1,9 @@
 import { type FunctionDeclaration } from "@google/genai";
-import { $Enums as prismaEnums } from "@sky/db";
+import { Tools } from "../types/tools";
 
 export const taskTool = {
   createTaskPlan: {
-    identifier: prismaEnums.ToolCall.CREATE_PLAN,
+    identifier: Tools.CREATE_PLAN,
     declaration: {
       name: "createTaskPlan",
       description:
@@ -38,7 +38,7 @@ export const taskTool = {
     },
   },
   informCompletedTaskFromTaskPlan: {
-    identifier: prismaEnums.ToolCall.INFORM_TASK_COMPLETION,
+    identifier: Tools.INFORM_TASK_COMPLETION,
     declaration: {
       name: "informCompletedTaskFromTaskPlan",
       description:

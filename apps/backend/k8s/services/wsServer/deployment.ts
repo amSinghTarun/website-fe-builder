@@ -26,7 +26,7 @@ export const wsServerDeploymentSpec = (projectId: string) => ({
         containers: [
           {
             name: `${projectId}-ws-server`,
-            image: "here will come my ws image",
+            image: "tarunsingh28/sky-ws-server",
             ports: [{ containerPort: 8080 }],
           },
         ],

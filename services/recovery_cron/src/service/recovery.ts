@@ -31,6 +31,7 @@ export const recovery = async () => {
     where: {
       ...toolCallIdQuery,
       projectId: projectId,
+      type: "TOOL_CALL",
     },
   });
 

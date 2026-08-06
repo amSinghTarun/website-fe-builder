@@ -1,11 +1,11 @@
 import { type FunctionDeclaration } from "@google/genai";
 import { catchUserInputResolver } from "../helper";
 import { randomUUID } from "node:crypto";
-import { $Enums as prismaEnums } from "@sky/db";
+import { Tools } from "../types/tools";
 
 export let inputTools = {
   takeUserInput: {
-    identifier: prismaEnums.ToolCall.TAKE_INPUT,
+    identifier: Tools.TAKE_INPUT,
     declaration: {
       name: "takeUserInput",
       description:

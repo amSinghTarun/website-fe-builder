@@ -6,12 +6,12 @@ import {
   unlinkSync,
   existsSync,
 } from "fs";
-import { $Enums as prismaEnums } from "@sky/db";
 import { resolveWorkspacePath } from "../helper";
+import { Tools } from "../types/tools";
 
 export let fileTools = {
   readDirectory: {
-    identifier: prismaEnums.ToolCall.READ_DIR,
+    identifier: Tools.READ_DIR,
     declaration: {
       name: "readDirectory",
       description: "List the files and folders in a directory.",
@@ -43,7 +43,7 @@ export let fileTools = {
   },
 
   readFileContent: {
-    identifier: prismaEnums.ToolCall.READ_FILE,
+    identifier: Tools.READ_FILE,
     declaration: {
       name: "readFileContent",
       description: "Read and return the full text content of a file.",
@@ -69,7 +69,7 @@ export let fileTools = {
   },
 
   createFile: {
-    identifier: prismaEnums.ToolCall.CREATE_FILE,
+    identifier: Tools.CREATE_FILE,
     declaration: {
       name: "createFile",
       description:
@@ -100,7 +100,7 @@ export let fileTools = {
   },
 
   deleteFile: {
-    identifier: prismaEnums.ToolCall.DELETE_FILE,
+    identifier: Tools.DELETE_FILE,
     declaration: {
       name: "deleteFile",
       description: "Delete the file at the specified path.",
@@ -131,7 +131,7 @@ export let fileTools = {
   },
 
   updateFile: {
-    identifier: prismaEnums.ToolCall.UPDATE_FILE,
+    identifier: Tools.UPDATE_FILE,
     declaration: {
       name: "updateFile",
       description:

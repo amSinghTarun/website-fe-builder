@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import z from "zod";
+import z, { keyof } from "zod";
 import { GeminiProvider } from "./providers/index.js";
 import {
   serializerCompiler,
@@ -10,6 +10,13 @@ import {
 import fastifySwagger from "@fastify/swagger";
 import scalar from "@scalar/fastify-api-reference";
 import { catchUserInputResolver } from "./helper";
+import {
+  prisma,
+  Prisma,
+  PrismaClient,
+  type ConversationHistory,
+} from "@sky/db";
+import { mergeWorktree, tools } from "./tools/index.js";
 
 const app = Fastify().withTypeProvider<ZodTypeProvider>();
 
@@ -98,13 +105,22 @@ app.post(
   {
     schema: {
       body: z.object({
-        toolCalls: z.string(),
+        toolCalls: z.custom<ConversationHistory>().array(),
       }),
     },
   },
   async (request, reply) => {
     try {
-      // to execute fnc calls is pending
+      for (let tool of request.body.toolCalls) {
+        if (tool.from == "LOOP") {
+          mergeWorktree(JSON.parse(tool.contents as string).args);
+          continue;
+        }
+        tools[tool.toolCall as keyof typeof tools].executable(
+          JSON.parse(tool.contents as string).args,
+          JSON.parse(tool.contents as string).context,
+        );
+      }
     } catch (error) {
       console.log(error);
     }

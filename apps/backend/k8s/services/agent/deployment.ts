@@ -28,11 +28,11 @@ export const agentDeploymentSpec = (projectId: string) => ({
         },
       },
       spec: {
-        serviceAccountName: "K8S_SERVICE_ACCOUNT",
+        serviceAccountName: "k8s-service-account",
         containers: [
           {
             name: `${projectId}-agent`,
-            image: `YOUR_DOCKER_HUB_IMAGE_HERE`,
+            image: `tarunsingh28/sky-agent`,
             ports: [{ containerPort: 3001 }],
             env: [
               { name: "PROJECT_ID", value: projectId },

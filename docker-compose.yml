@@ -88,3 +88,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+
+        # added simple login command in kubectl instead of hard coded path and then installed those packages through dockerfile and copy paster config through compose

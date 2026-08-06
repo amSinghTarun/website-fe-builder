@@ -42,9 +42,10 @@ model ConversationHistory {
   type             ConversationType
   from             MessageFrom
   output           String?
-  toolCall         ToolCall?
+  toolCall         String?
   completed        Boolean?
   snapshotCaptured Boolean?         @default(false)
+  agentId          String?
 
   // To think on
   // 1. context
@@ -61,19 +62,6 @@ enum ConversationType {
 
 enum MessageFrom {
   USER
+  LOOP
   ASSISTANT
-}
-
-enum ToolCall {
-  GET_CURRENT_WORKSPACE
-  READ_DIR
-  READ_FILE
-  CREATE_FILE
-  UPDATE_FILE
-  DELETE_FILE
-  CREATE_SUB_AGENT
-  INFORM_TASK_COMPLETION
-  WAITING_FOR_SUB_AGENT
-  CREATE_PLAN
-  TAKE_INPUT
 }

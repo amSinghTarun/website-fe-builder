@@ -1,8 +1,8 @@
 import { type FunctionDeclaration } from "@google/genai";
 import { queueMerge, registerSubAgent, subAgents } from "../helper";
-import { $Enums as prismaEnums } from "@sky/db";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { Tools } from "../types/tools";
 
 export const mergeWorktree = (args: {
   id: string;
@@ -34,7 +34,7 @@ export const mergeWorktree = (args: {
 
 export const agentTool = {
   createSubAgent: {
-    identifier: prismaEnums.ToolCall.CREATE_SUB_AGENT,
+    identifier: Tools.CREATE_SUB_AGENT,
     declaration: {
       name: "createSubAgent",
       description: "Create a sub-agent and spawn off a dedicated task to it",
@@ -106,7 +106,7 @@ export const agentTool = {
     },
   },
   waitForSubAgent: {
-    identifier: prismaEnums.ToolCall.WAITING_FOR_SUB_AGENT,
+    identifier: Tools.WAITING_FOR_SUB_AGENT,
     declaration: {
       name: "waitForSubAgent",
       description:
@@ -122,7 +122,7 @@ export const agentTool = {
         required: ["id"],
       },
     } as FunctionDeclaration,
-    executable: async (args: { id: string }, context: { cwd: string }) => {
+    executable: async (args: { id: string }, _context: { cwd: string }) => {
       let response = {
         status: "ERROR : NO AGENT WITH THAT ID FOUND",
         id: args.id,
@@ -139,7 +139,7 @@ export const agentTool = {
     },
   },
   getCurrentWorkspace: {
-    identifier: prismaEnums.ToolCall.GET_CURRENT_WORKSPACE,
+    identifier: Tools.GET_CURRENT_WORKSPACE,
     declaration: {
       name: "getCurrentWorkspace",
       description:

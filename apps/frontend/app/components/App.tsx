@@ -4,6 +4,23 @@ import { useState, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
+type ConversationType = string; // narrow this to your actual enum if exported
+type MessageFrom = "USER" | "ASSISTANT";
+
+type ChatRecord = {
+  id: number;
+  projectId: string;
+  contents: string;
+  type: ConversationType;
+  from: MessageFrom;
+  output: string | null;
+  toolCall: unknown | null;
+  completed: boolean | null;
+  snapshotCaptured: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ChatMessage = {
   id: string;
   from: "user" | "assistant";
@@ -26,14 +43,20 @@ export function App() {
   const [resolvedName, setResolvedName] = useState<string | null>(nameFromUrl);
   const [loadingName, setLoadingName] = useState(false);
 
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [message, setMessage] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Resolve project name (URL param, or look up from /projects when resuming)
   useEffect(() => {
-    // New projects already carry the name in the URL — nothing to fetch.
     if (nameFromUrl) {
       setResolvedName(nameFromUrl);
       return;
     }
-
-    // Resumed projects only have ?project=id — look up the real title.
     if (!projectId) return;
 
     let cancelled = false;
@@ -41,26 +64,21 @@ export function App() {
     const fetchProjectName = async () => {
       setLoadingName(true);
       try {
-        // TODO: swap for a single-project endpoint once available, e.g.
-        // GET /projects/:id → avoids fetching the whole list just for a name.
+        // TODO: swap for GET /projects/:id once available
         const res = await fetch("http://localhost:3001/projects", {
           credentials: "include",
         });
-
         if (!res.ok) throw new Error("Failed to load project");
 
         const json = await res.json();
         const match = (json.data ?? []).find(
           (p: { id: string; title: string }) => p.id === projectId
         );
-
-        if (!cancelled) {
-          setResolvedName(match ? match.title : null);
-        }
+        if (!cancelled) setResolvedName(match ? match.title : null);
       } catch (err: unknown) {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : "Unknown error";
-          toast.error(message);
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          toast.error(msg);
         }
       } finally {
         if (!cancelled) setLoadingName(false);
@@ -68,23 +86,65 @@ export function App() {
     };
 
     fetchProjectName();
-
     return () => {
       cancelled = true;
     };
   }, [nameFromUrl, projectId]);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [message, setMessage] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
-  const isFirstMessage = messages.length === 0;
+  // Load conversation history whenever a project is selected
+  useEffect(() => {
+    if (!projectId) return;
 
-  const scrollRef = useRef<HTMLDivElement>(null);
+    let cancelled = false;
+
+    const fetchHistory = async () => {
+      setLoadingHistory(true);
+      try {
+        const res = await fetch(
+          `http://localhost:3001/chat?projectId=${encodeURIComponent(projectId)}`,
+          { credentials: "include" }
+        );
+
+        if (!res.ok) {
+          const error = await res.json();
+          throw new Error(error.message || "Failed to load conversation");
+        }
+
+        const json = await res.json();
+        const records: ChatRecord[] = json.data ?? [];
+
+        const sorted = [...records].sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        );
+
+        const mapped: ChatMessage[] = sorted.map((r) => ({
+          id: String(r.id),
+          from: r.from === "USER" ? "user" : "assistant",
+          message: r.contents,
+        }));
+
+        if (!cancelled) setMessages(mapped);
+      } catch (err: unknown) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          toast.error(msg);
+        }
+      } finally {
+        if (!cancelled) setLoadingHistory(false);
+      }
+    };
+
+    fetchHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isGenerating]);
+
+  const isFirstMessage = messages.length === 0;
 
   const sendPrompt = async (text: string) => {
     const trimmed = text.trim();
@@ -160,7 +220,7 @@ export function App() {
       <nav className="relative z-10 h-16 px-10 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <Sparkles className="text-cyan-400" size={18} />
-          <a href="/" className="font-black tracking-[0.25em] text-lg">SKY</a>
+          <h1 className="font-black tracking-[0.25em] text-lg">SKY</h1>
         </div>
         <div className="flex gap-3">
           {user && (
@@ -185,7 +245,13 @@ export function App() {
             </div>
 
             <div ref={scrollRef} className="h-full flex-1 flex flex-col gap-2 overflow-y-auto">
-              {messages.length === 0 && !isGenerating && (
+              {loadingHistory && (
+                <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm gap-2">
+                  <Loader2 size={14} className="animate-spin" /> Loading conversation...
+                </div>
+              )}
+
+              {!loadingHistory && messages.length === 0 && !isGenerating && (
                 <div className="flex-1 flex flex-col justify-center gap-3">
                   <p className="text-zinc-600 text-xs uppercase tracking-[0.2em] mb-1">
                     Try something like
@@ -202,21 +268,22 @@ export function App() {
                 </div>
               )}
 
-              {messages.map((m) =>
-                m.from === "user" ? (
-                  <div key={m.id} className="w-full flex justify-end">
-                    <div className="w-fit max-w-[85%] p-2 px-3 text-right rounded-lg rounded-br-none bg-cyan-300 text-black text-sm">
-                      {m.message}
+              {!loadingHistory &&
+                messages.map((m) =>
+                  m.from === "user" ? (
+                    <div key={m.id} className="w-full flex justify-end">
+                      <div className="w-fit max-w-[85%] p-2 px-3 text-right rounded-lg rounded-br-none bg-cyan-300 text-black text-sm">
+                        {m.message}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div key={m.id} className="w-full flex justify-start">
-                    <div className="w-fit max-w-[85%] p-2 px-3 rounded-lg rounded-bl-none bg-zinc-900 text-zinc-200 text-sm">
-                      {m.message}
+                  ) : (
+                    <div key={m.id} className="w-full flex justify-start">
+                      <div className="w-fit max-w-[85%] p-2 px-3 rounded-lg rounded-bl-none bg-zinc-900 text-zinc-200 text-sm">
+                        {m.message}
+                      </div>
                     </div>
-                  </div>
-                )
-              )}
+                  )
+                )}
 
               {isGenerating && (
                 <div className="w-full flex justify-start">
