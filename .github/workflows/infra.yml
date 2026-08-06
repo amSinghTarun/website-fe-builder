@@ -67,7 +67,7 @@ jobs:
           kubectl apply -f ./infra/pvc.yml
           kubectl apply -f ./infra/postgres.yml
           kubectl apply -f ./infra/ingress.yml
-          kubectl apply -f ./infra/dynamic_ngi nx/deployment.yml
+          kubectl apply -f ./infra/dynamic_nginx/deployment.yml
         # kubectl apply -f ./infra/apps/backend
         # kubectl apply -f ./infra/apps/frontend
 

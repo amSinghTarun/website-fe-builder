@@ -45,22 +45,20 @@ spec:
       app: dynamic-nginx
   replicas: 1
   template:
-    metadata:
-      labels:
-        app: dynamic-nginx
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:alpine
-          ports:
+  spec:
+    containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
           - containerPort: 8080
-          volumeMounts:
-            - name: nginx-config
-              mountPath: /etc/nginx/conf.d
-      volumes:
-        - name: nginx-config
-          configMap:
-            name: confnginx
+        volumeMounts:
+          - name: nginx-config
+            mountPath: /etc/nginx/conf.d/default.conf
+            subPath: default.conf
+    volumes:
+      - name: nginx-config
+        configMap:
+          name: confnginx
 
 ---
 
