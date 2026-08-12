@@ -293,7 +293,7 @@ The active dynamic route shapes are intended to be:
 
 ### CI/CD and identity
 
-`.github/workflows/services.yml` builds and pushes the agent, recovery, WebSocket, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies RBAC/platform/application manifests, pins shared apps to the commit SHA, refreshes existing project services, and waits for rollouts.
+`.github/workflows/services.yml` builds and pushes the agent, recovery, WebSocket, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies platform/application manifests, pins shared apps to the commit SHA, refreshes existing project services, and waits for rollouts. Runtime Roles and RoleBindings are a cluster bootstrap prerequisite: apply `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml` once with a cluster-admin context, and apply them again whenever their rules change. The regular deployment identity intentionally does not manage RBAC.
 
 `setup_workload_identity.sh` creates `k8s-service-account` and grants it permission to impersonate the configured Google service account. Per-project agent and recovery pods reference that Kubernetes account so Google client libraries can use Application Default Credentials without embedding keys in their images.
 
@@ -814,7 +814,7 @@ The approach is functionally complete when these cases pass:
 | Uniform tool results/effects           | `services/agentServer/src/tools/**`, `services/agentServer/src/types/tools.ts`                                          |
 | Main-loop integration                  | `services/agentServer/src/providers/gemini.ts`                                                                          |
 | Recovery observation                   | `services/agentServer/src/index.ts`, `services/recovery_cron/src/service/recovery.ts`                                   |
-| Pod/log RBAC                           | a checked-in manifest under `infra/`, applied by `.github/workflows/infra.yml`                                          |
+| Pod/log RBAC                           | `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml`, applied as a cluster-admin bootstrap prerequisite     |
 | Schema/source alignment                | `packages/db/prisma/schema.prisma`, a migration only if the chosen durable model changes, and regenerated Prisma Client |
 
 This plan deliberately treats runtime monitoring as an observer attached to the existing agent state machine. The LLM continues to decide how to repair application code, Kubernetes remains authoritative for container state and logs, and HTTP remains authoritative for whether the generated web application actually responds.

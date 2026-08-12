@@ -66,11 +66,11 @@ jobs:
             --from-literal=POSTGRES_DB="${{ secrets.POSTGRES_DB }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-        # deploy the docker images to k8s
+      # deploy the docker images to k8s
       - name: Deploy apps
         run: |
-          kubectl apply -f ./infra/app-runtime-monitor-rbac.yml
-          kubectl apply -f ./infra/backend-rbac.yml
+          # Runtime RBAC is bootstrapped separately with a cluster-admin context.
+          # The deployment identity intentionally cannot create or update RBAC.
           kubectl apply -f ./infra/pvc.yml
           kubectl apply -f ./infra/postgres.yml
           kubectl apply -f ./infra/dynamic_nginx/deployment.yml
