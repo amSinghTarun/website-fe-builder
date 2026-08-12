@@ -43,7 +43,7 @@ export const workspaceDeploymentSpec = (
               env: [
                 {
                   name: "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
-                  value: "project.tarunn.co",
+                  value: "project.tarun.co",
                 },
               ],
               command: [

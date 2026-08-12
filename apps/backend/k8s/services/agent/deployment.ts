@@ -96,7 +96,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                 { name: "WORKSPACE_PORT", value: "5173" },
                 {
                   name: "WORKSPACE_PUBLIC_HOST",
-                  value: "project.tarunn.co",
+                  value: "project.tarun.co",
                 },
                 {
                   name: "WORKSPACE_HEALTH_PATH",

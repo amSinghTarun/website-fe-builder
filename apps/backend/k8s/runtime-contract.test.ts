@@ -29,7 +29,7 @@ describe("per-project runtime contract", () => {
     expect(container.readinessProbe.httpGet.port).toBe(5173);
     expect(container.env).toContainEqual({
       name: "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
-      value: "project.tarunn.co",
+      value: "project.tarun.co",
     });
     expect(container.resources.requests).toEqual({
       cpu: "250m",
@@ -57,7 +57,7 @@ describe("per-project runtime contract", () => {
       WORKSPACE_PATH: "/user-app/my-app",
       WORKSPACE_SERVICE: `${runtimeId}-workspace-service`,
       WORKSPACE_PORT: "5173",
-      WORKSPACE_PUBLIC_HOST: "project.tarunn.co",
+      WORKSPACE_PUBLIC_HOST: "project.tarun.co",
       WORKSPACE_HEALTH_PATH: `/workspace/${runtimeId}/`,
       PORT: "3000",
     });

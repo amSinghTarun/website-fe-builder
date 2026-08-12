@@ -1,4 +1,4 @@
-# any request to /something/tarunn.co will fo to nginx-custom service
+# Requests for project.tarun.co would go to the dynamic nginx service.
 
 #  Don't really need it as Ingress kind is used for external facing svc, and this nginx dynamic proxy is internal
 
@@ -10,7 +10,7 @@ metadata:
     kubernetes.io/ingress.class: nginx
 spec:
   rules:
-  - host: '*.tarunn.co'
+  - host: project.tarun.co
     http:
       paths:
       - path: /

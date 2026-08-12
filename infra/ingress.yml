@@ -7,7 +7,7 @@ data:
   default.conf: |
     server {
       listen 80;
-      server_name sky.tarunn.co;
+      server_name sky.traun.co;
 
       location /api/ {
         proxy_buffering off;
@@ -31,7 +31,7 @@ data:
 
     server {
       listen 80;
-      server_name api.tarunn.co;
+      server_name api.tarun.co;
 
       location / {
         proxy_pass http://backend-service.default.svc.cluster.local:3001;
@@ -44,7 +44,7 @@ data:
 
     server {
       listen 80;
-      server_name project.tarunn.co;
+      server_name project.tarun.co;
 
       location / {
         proxy_pass http://nginx-custom.default.svc.cluster.local:8080;

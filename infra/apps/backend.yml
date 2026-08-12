@@ -41,9 +41,9 @@ spec:
                   name: sky-secrets
                   key: GCP_PROJECT_ID
             - name: PROJECTS_BASE_URL
-              value: http://project.tarunn.co
+              value: http://project.tarun.co
             - name: CORS_ORIGINS
-              value: http://sky.tarunn.co,https://sky.tarunn.co
+              value: http://sky.traun.co,https://sky.traun.co
           readinessProbe:
             httpGet:
               path: /health

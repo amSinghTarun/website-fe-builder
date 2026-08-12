@@ -10,7 +10,7 @@ const runtimeRef: AppRuntimeRef = {
   containerName: "node",
   serviceName: "sky-database-id-workspace-service",
   servicePort: 5173,
-  httpHost: "project.tarunn.co",
+  httpHost: "project.tarun.co",
   httpPath: "/workspace/sky-database-id/",
 };
 
@@ -127,7 +127,7 @@ describe("AppRuntimeMonitor", () => {
     expect(observedUrl).toBe(
       "http://sky-database-id-workspace-service.default.svc.cluster.local:5173/workspace/sky-database-id/",
     );
-    expect(observedHost).toBe("project.tarunn.co");
+    expect(observedHost).toBe("project.tarun.co");
   });
 
   test("waits through a transient reload", async () => {

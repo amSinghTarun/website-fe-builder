@@ -25,7 +25,7 @@ import { Readable } from "node:stream";
 
 const PORT = 3001;
 const projectsBaseUrl = (
-  process.env.PROJECTS_BASE_URL?.trim() || "http://project.tarunn.co"
+  process.env.PROJECTS_BASE_URL?.trim() || "http://project.tarun.co"
 ).replace(/\/+$/, "");
 
 function projectRuntimeRoutes(databaseProjectId: string) {
@@ -82,7 +82,7 @@ await app.register(cors, {
   origin: (origin, callback) => {
     const allowedOrigins = new Set(
       (process.env.CORS_ORIGINS ??
-        "http://localhost:5173,http://sky.tarunn.co,https://sky.tarunn.co")
+        "http://localhost:5173,http://sky.traun.co,https://sky.traun.co")
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean),
