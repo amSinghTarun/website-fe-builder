@@ -142,7 +142,7 @@ The backend is a Fastify server on port `3001`. Zod schemas provide request/resp
 
 The TypeScript manifest builders live under `apps/backend/k8s`. Every builder accepts the raw `databaseProjectId` and derives its Kubernetes prefix with `toRuntimeId`; callers never pass a prefixed ID into a manifest builder. Every resource is therefore prefixed exactly once with `sky-<database project UUID>`. The workspace initializes `my-app` from the chosen Vite template and mounts the PVC at `/app`. The agent and recovery pods mount the same PVC at `/user-app`. The recovery and agent pods use `k8s-service-account`; their database and GCP project values come from the `sky-secrets` Kubernetes Secret.
 
-The backend is therefore the boundary between stable platform infrastructure and ephemeral project-specific infrastructure. It injects the raw `DATABASE_PROJECT_ID` as the single project identity plus `WORKSPACE_PATH`, workspace Service/container details, and the application/agent ports. Code that needs a Kubernetes name derives it with the shared `toRuntimeId(databaseProjectId)` helper.
+The backend is therefore the boundary between stable platform infrastructure and ephemeral project-specific infrastructure. It injects the raw `DATABASE_PROJECT_ID` as the single project identity plus `WORKSPACE_PATH`, workspace Service/container details, and the application/agent ports. Code that needs a Kubernetes name derives it with the shared `toRuntimeId(databaseProjectId)` helper. Bun processes that call the Kubernetes API explicitly load the mounted service-account CA through `NODE_EXTRA_CA_CERTS`; TLS verification remains enabled. Each generated container also declares explicit resource requests and limits so GKE Autopilot does not assign its much larger defaults to lightweight runtime and init containers. The three PVC-mounted Deployments use the `Recreate` update strategy, avoiding duplicate rolling pods contending for `ReadWriteOnce` storage and temporary quota. Vite keeps host validation enabled and receives `project.tarunn.co` through `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, allowing the public iframe host without accepting arbitrary domains.
 
 ## 7. `packages/db`: shared persistence layer
 
@@ -232,7 +232,7 @@ At 1,000 counted tokens, `contextualiseChat` replaces large `updateFile` argumen
 
 Sub-agent worktrees are placed in a sibling `worktrees/agent-<id>` directory. A global promise chain serializes merges so multiple agents cannot mutate the main worktree simultaneously. Automatic merge records use `from=LOOP` so recovery can distinguish orchestration actions from model tool calls.
 
-The main agent now runs with `/user-app/my-app` as its tool root. Tools return a uniform `ToolResult` containing optional runtime effects. The main Gemini loop performs one runtime observation per mutation batch, checks again before completion, emits structured `runtime`/`runtimeBlocked` stream events, and limits repeated repair requests for the same failure fingerprint to three. Sub-agents use separate in-memory session keys while retaining the raw database project UUID.
+The main agent now runs with `/user-app/my-app` as its tool root. Tools return a uniform `ToolResult` containing optional runtime effects. The main Gemini loop performs one runtime observation per mutation batch, checks again before completion, emits structured `runtime`/`runtimeBlocked` stream events, and limits repeated repair requests for the same failure fingerprint to three. Its HTTP observation calls the workspace Service but uses the same `/workspace/<runtimeId>/` path and `project.tarunn.co` Host header as the public iframe, so Vite host validation and base-path behavior are represented accurately. Sub-agents use separate in-memory session keys while retaining the raw database project UUID. A failed first model call is emitted as an SSE error and persisted without attempting token counting on an empty chat history, so the original Vertex/IAM error is not masked.
 
 `src/agent.ts` is an obsolete, fully commented version of the agent wrapper; the active implementation is `providers/gemini.ts`.
 
@@ -252,6 +252,8 @@ The service starts two processes in the same Bun runtime:
 `gcpStore` is a singleton around `@google-cloud/storage`. It lazily creates the hard-coded `lovable_backup_snapshots` bucket, uploads snapshot bytes, lists a project's objects, selects the newest by creation time, and extracts it with `unzipper`.
 
 This service shares the database package and project PVC with the agent/workspace. Its recovery algorithm is intended to be:
+
+If GCS is unavailable or the workload identity lacks bucket access, recovery logs the infrastructure error and releases the workspace bootstrap marker without a snapshot. Backup attempts remain protected by the cron error handler. This keeps a new project usable while making persistence degradation visible in pod logs.
 
 ```text
 latest object-store snapshot
@@ -279,7 +281,7 @@ The directory name itself contains the historical typo `_workspace_runtine`; wor
 - `infra/pvc.yml` creates a 2 Gi `sky-pvc` for platform PostgreSQL data.
 - `infra/postgres.yml` deploys PostgreSQL 16 and exposes `postgres-service:5432`.
 - `infra/ingress.yml` is actually a public Nginx ConfigMap/Deployment/LoadBalancer service, not a Kubernetes `Ingress`. It routes `sky.tarunn.co`, `api.tarunn.co`, and `project.tarunn.co` to the frontend, backend, and dynamic proxy Services.
-- `infra/dynamic_nginx/deployment.yml` runs internal Nginx on `nginx-custom:8080`. It extracts a project key from the URL and dynamically resolves agent, workspace, or WebSocket Kubernetes DNS names.
+- `infra/dynamic_nginx/deployment.yml` runs internal Nginx on `nginx-custom:8080`. It extracts a project key from the URL and dynamically resolves agent, workspace, or WebSocket Kubernetes DNS names. The deployment workflow restarts both proxy Deployments after applying their ConfigMaps because their configuration files are mounted with `subPath`.
 - `infra/apps/backend.yml` and `infra/apps/frontend.yml` contain the shared application Deployments and Services.
 - `infra/dynamic_nginx/_nginx.conf` and `_ingress.yml` are older routing sketches retained for reference.
 
@@ -293,9 +295,9 @@ The active dynamic route shapes are intended to be:
 
 ### CI/CD and identity
 
-`.github/workflows/services.yml` builds and pushes the agent, recovery, WebSocket, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies platform/application manifests, pins shared apps to the commit SHA, refreshes existing project services, and waits for rollouts. Runtime Roles and RoleBindings are a cluster bootstrap prerequisite: apply `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml` once with a cluster-admin context, and apply them again whenever their rules change. The regular deployment identity intentionally does not manage RBAC.
+`.github/workflows/services.yml` builds and pushes the agent, recovery, WebSocket, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies platform/application manifests, pins shared apps to the commit SHA, refreshes existing project services, waits for rollouts, and applies pending Prisma migrations. If the GitHub `JWT_SECRET` is unset, the workflow preserves the cluster's current value or generates one only for a new cluster; a stable GitHub secret is still recommended for disaster recovery. Runtime Roles and RoleBindings are a cluster bootstrap prerequisite: apply `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml` once with a cluster-admin context, and apply them again whenever their rules change. The regular deployment identity intentionally does not manage RBAC.
 
-`setup_workload_identity.sh` creates `k8s-service-account` and grants it permission to impersonate the configured Google service account. Per-project agent and recovery pods reference that Kubernetes account so Google client libraries can use Application Default Credentials without embedding keys in their images.
+`setup_workload_identity.sh` creates `k8s-service-account` and grants its direct GKE workload principal Vertex AI User on the project plus object-admin/bucket-reader access scoped to `lovable_backup_snapshots`. Per-project agent and recovery pods reference that Kubernetes account so Google client libraries can use short-lived Application Default Credentials without embedded keys.
 
 ## 13. End-to-end flows
 
@@ -363,7 +365,7 @@ These are important when reasoning about the repository as it exists today:
 4. **A `ReadWriteOnce` PVC is shared across three Deployments.** This depends on the storage class and pod scheduling; it is not a portable multi-node sharing model.
 5. **Namespace-level monitoring RBAC is not tenant-isolated.** The shared project ServiceAccount can list pods and read logs across the `default` namespace. Production should use per-project namespaces/ServiceAccounts or a trusted observer service.
 6. **Recovery is still prototype-grade.** ZIP creation, a snapshot high-water mark, startup coordination, and replay are connected, but retention, cleanup, concurrent backups, and failure recovery still need hardening.
-7. **Database migration is not part of the active deployment workflow.** This change does not require a Prisma schema migration, but future schema changes need an explicit migration job.
+7. **Database migrations run from the deployed backend image.** After all shared Deployments become ready, the deployment workflow executes `prisma migrate deploy` inside the backend pod. The current runtime-monitor change does not add a new schema migration.
 8. **Authentication is still prototype-grade.** The generated default-password signup path, cookie/TLS policy, rate limits, and CSRF protection need production hardening.
 
 ## 16. Where to make common changes

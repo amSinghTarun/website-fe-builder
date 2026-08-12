@@ -61,3 +61,19 @@ spec:
   ports:
     - port: 5432
       targetPort: 5432
+
+---
+
+# DATABASE_URL is configured with the short hostname `postgres` in the
+# deployment secret. Keep this stable alias alongside `postgres-service`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: sky-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

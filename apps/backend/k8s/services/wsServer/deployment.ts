@@ -33,6 +33,10 @@ export const wsServerDeploymentSpec = (databaseProjectId: string) => {
               image: "tarunsingh28/sky-ws-server",
               imagePullPolicy: "Always",
               ports: [{ containerPort: 8080 }],
+              resources: {
+                requests: { cpu: "50m", memory: "64Mi" },
+                limits: { cpu: "250m", memory: "256Mi" },
+              },
             },
           ],
         },

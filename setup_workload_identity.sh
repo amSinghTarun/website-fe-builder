@@ -10,7 +10,7 @@ K8S_SA_NAME="k8s-service-account"
 K8S_NAMESPACE="default"
 
 GCP_PROJECT_ID="project-b955da7b-8f9e-4324-af2"
-GCP_SA_EMAIL="sky-backend-gcp-sa@project-b955da7b-8f9e-4324-af2.iam.gserviceaccount.com"
+BACKUP_BUCKET="lovable_backup_snapshots"
 # ==========================================
 
 echo "=================================================="
@@ -31,18 +31,30 @@ EOF
 echo "✅ Kubernetes Service Account created successfully."
 echo "--------------------------------------------------"
 
-# 2. Bind it to your GCP Service Account
-echo "⏳ Step 2: Binding K8S Identity to GCP Service Account..."
-echo "Target GCP SA: ${GCP_SA_EMAIL}"
+# 2. Grant the direct GKE workload principal only the cloud permissions used
+# by the agent and recovery services.
+echo "⏳ Step 2: Granting cloud roles to the GKE workload principal..."
 
-gcloud iam service-accounts add-iam-policy-binding "${GCP_SA_EMAIL}" \
-    --role="roles/iam.workloadIdentityUser" \
-    --member="serviceAccount:${GCP_PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/${K8S_SA_NAME}]"
+PROJECT_NUMBER="$(gcloud projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)')"
+WORKLOAD_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${GCP_PROJECT_ID}.svc.id.goog/subject/ns/${K8S_NAMESPACE}/sa/${K8S_SA_NAME}"
+
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+    --role="roles/aiplatform.user" \
+    --member="${WORKLOAD_PRINCIPAL}" \
+    --condition=None
+
+gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+    --role="roles/storage.objectAdmin" \
+    --member="${WORKLOAD_PRINCIPAL}"
+
+gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+    --role="roles/storage.legacyBucketReader" \
+    --member="${WORKLOAD_PRINCIPAL}"
 
 echo "--------------------------------------------------"
 echo "🎉 Setup complete! Your Kubernetes pods using the"
-echo "   '${K8S_SA_NAME}' service account can now securely"
-echo "   authenticate with Google Cloud."
+echo "   '${K8S_SA_NAME}' service account can now call Vertex AI"
+echo "   and read/write the configured backup bucket."
 echo "=================================================="
 
 
@@ -51,5 +63,6 @@ echo "=================================================="
 # Kubernetes proactively injects it.
 # When you deploy your pod with serviceAccountName: "agent-k8s-sa", the Kubernetes control plane sees this before the pod even starts.
 # The control plane automatically mounts a special, short-lived OIDC JSON Web Token (JWT) into the pod's file system at a projected volume path (typically /var/run/secrets/kubernetes.io/serviceaccount/token).
-# Simultaneously, because GKE knows you are using Workload Identity, it injects environment variables into your container automatically, such as:
-# GOOGLE_APPLICATION_CREDENTIALS pointing to a local configuration file.
+# GKE's metadata server exchanges that projected identity for short-lived
+# Google credentials. No service-account key or static credential file is
+# embedded in the container.

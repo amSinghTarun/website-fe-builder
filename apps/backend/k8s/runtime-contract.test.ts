@@ -27,6 +27,15 @@ describe("per-project runtime contract", () => {
     expect(container.ports[0]?.containerPort).toBe(5173);
     expect(container.startupProbe.tcpSocket.port).toBe(5173);
     expect(container.readinessProbe.httpGet.port).toBe(5173);
+    expect(container.env).toContainEqual({
+      name: "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
+      value: "project.tarunn.co",
+    });
+    expect(container.resources.requests).toEqual({
+      cpu: "250m",
+      memory: "512Mi",
+    });
+    expect(deployment.spec.strategy).toEqual({ type: "Recreate" });
     expect(deployment.metadata.name).toBe(`${runtimeId}-workspace`);
 
     const service = workspaceServiceSpec(databaseProjectId);
@@ -48,6 +57,8 @@ describe("per-project runtime contract", () => {
       WORKSPACE_PATH: "/user-app/my-app",
       WORKSPACE_SERVICE: `${runtimeId}-workspace-service`,
       WORKSPACE_PORT: "5173",
+      WORKSPACE_PUBLIC_HOST: "project.tarunn.co",
+      WORKSPACE_HEALTH_PATH: `/workspace/${runtimeId}/`,
       PORT: "3000",
     });
     expect(environment).not.toHaveProperty("RUNTIME_ID");
@@ -58,6 +69,13 @@ describe("per-project runtime contract", () => {
       path: "/health",
       port: 3000,
     });
+    expect(deployment.spec.strategy).toEqual({ type: "Recreate" });
+    expect(container.resources.requests).toEqual({
+      cpu: "250m",
+      memory: "512Mi",
+    });
+    expect(deployment.spec.template.spec.initContainers[0]?.resources.requests)
+      .toEqual({ cpu: "50m", memory: "64Mi" });
 
     const service = agentServiceSpec(databaseProjectId);
     expect(service.metadata.name).toBe(`${runtimeId}-agent-service`);
@@ -74,6 +92,11 @@ describe("per-project runtime contract", () => {
     );
 
     expect(deployment.metadata.name).toBe(`${runtimeId}-recovery`);
+    expect(deployment.spec.strategy).toEqual({ type: "Recreate" });
+    expect(container.resources.requests).toEqual({
+      cpu: "100m",
+      memory: "256Mi",
+    });
     expect(environment.DATABASE_PROJECT_ID).toBe(databaseProjectId);
     expect(environment).not.toHaveProperty("RUNTIME_ID");
   });

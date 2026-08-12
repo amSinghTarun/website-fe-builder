@@ -52,6 +52,11 @@ export function getConfiguredAppRuntimeMonitor():
         process.env["WORKSPACE_CONTAINER"]?.trim() || "node",
       serviceName,
       servicePort: Number.isFinite(servicePort) ? servicePort : 5173,
+      httpHost:
+        process.env["WORKSPACE_PUBLIC_HOST"]?.trim() || "project.tarunn.co",
+      httpPath:
+        process.env["WORKSPACE_HEALTH_PATH"]?.trim() ||
+        `/workspace/${runtimeId}/`,
     },
   };
 

@@ -17,6 +17,7 @@ export const workspaceDeploymentSpec = (
     },
     spec: {
       replicas: 1,
+      strategy: { type: "Recreate" },
       selector: {
         matchLabels: {
           app: `${runtimeId}-workspace`,
@@ -37,6 +38,12 @@ export const workspaceDeploymentSpec = (
               ports: [
                 {
                   containerPort: 5173,
+                },
+              ],
+              env: [
+                {
+                  name: "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS",
+                  value: "project.tarunn.co",
                 },
               ],
               command: [
@@ -81,6 +88,10 @@ export const workspaceDeploymentSpec = (
                 periodSeconds: 2,
                 timeoutSeconds: 1,
                 failureThreshold: 3,
+              },
+              resources: {
+                requests: { cpu: "250m", memory: "512Mi" },
+                limits: { cpu: "1", memory: "1Gi" },
               },
               terminationMessagePolicy: "FallbackToLogsOnError",
               volumeMounts: [

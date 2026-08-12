@@ -215,10 +215,13 @@ app.post(
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code == "P2002"
       ) {
-        throw new Error(
-          "Username already exist, Please just click signup again",
-        );
+        return reply.code(409).send({
+          status: "error",
+          message: "Username already exists. Please choose another username.",
+        });
       }
+
+      throw error;
     }
   },
 );

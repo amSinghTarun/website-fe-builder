@@ -10,6 +10,8 @@ const runtimeRef: AppRuntimeRef = {
   containerName: "node",
   serviceName: "sky-database-id-workspace-service",
   servicePort: 5173,
+  httpHost: "project.tarunn.co",
+  httpPath: "/workspace/sky-database-id/",
 };
 
 function podWithContainer(
@@ -54,6 +56,10 @@ function createMonitor(options: {
   httpStatus?: number;
   httpBody?: string;
   listError?: Error;
+  fetchFn?: (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => Promise<Response>;
 }) {
   const pods = options.pods ?? [];
   let readIndex = 0;
@@ -72,10 +78,12 @@ function createMonitor(options: {
 
   return new AppRuntimeMonitor({
     coreApi,
-    fetchFn: async () =>
-      new Response(options.httpBody ?? "", {
-        status: options.httpStatus ?? 200,
-      }),
+    fetchFn:
+      options.fetchFn ??
+      (async () =>
+        new Response(options.httpBody ?? "", {
+          status: options.httpStatus ?? 200,
+        })),
   });
 }
 
@@ -95,6 +103,31 @@ describe("AppRuntimeMonitor", () => {
       repairableByAgent: false,
       httpStatus: 200,
     });
+  });
+
+  test("probes the same host and base path exposed by the iframe", async () => {
+    let observedUrl = "";
+    let observedHost = "";
+    const monitor = createMonitor({
+      pods: [
+        podWithContainer(
+          { running: { startedAt: new Date() } },
+          { ready: true },
+        ),
+      ],
+      fetchFn: async (input, init) => {
+        observedUrl = String(input);
+        observedHost = new Headers(init?.headers).get("host") ?? "";
+        return new Response("", { status: 200 });
+      },
+    });
+
+    await monitor.getState(runtimeRef);
+
+    expect(observedUrl).toBe(
+      "http://sky-database-id-workspace-service.default.svc.cluster.local:5173/workspace/sky-database-id/",
+    );
+    expect(observedHost).toBe("project.tarunn.co");
   });
 
   test("waits through a transient reload", async () => {

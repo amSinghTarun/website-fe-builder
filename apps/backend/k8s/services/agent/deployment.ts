@@ -22,6 +22,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
     },
     spec: {
       replicas: 1,
+      strategy: { type: "Recreate" },
       selector: {
         matchLabels: {
           app: `${runtimeId}-agent`,
@@ -44,6 +45,10 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                 "-c",
                 `until [ -f /user-app/my-app/package.json ] && [ -d /user-app/my-app/.git ] && nc -z ${runtimeId}-workspace-service 5173; do sleep 2; done`,
               ],
+              resources: {
+                requests: { cpu: "50m", memory: "64Mi" },
+                limits: { cpu: "100m", memory: "128Mi" },
+              },
               volumeMounts: [
                 {
                   name: `${runtimeId}-volume`,
@@ -70,7 +75,16 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                 periodSeconds: 10,
                 timeoutSeconds: 2,
               },
+              resources: {
+                requests: { cpu: "250m", memory: "512Mi" },
+                limits: { cpu: "1", memory: "2Gi" },
+              },
               env: [
+                {
+                  name: "NODE_EXTRA_CA_CERTS",
+                  value:
+                    "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+                },
                 { name: "DATABASE_PROJECT_ID", value: databaseProjectId },
                 { name: "APP_NAMESPACE", value: "default" },
                 { name: "WORKSPACE_PATH", value: "/user-app/my-app" },
@@ -80,6 +94,14 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                   value: `${runtimeId}-workspace-service`,
                 },
                 { name: "WORKSPACE_PORT", value: "5173" },
+                {
+                  name: "WORKSPACE_PUBLIC_HOST",
+                  value: "project.tarunn.co",
+                },
+                {
+                  name: "WORKSPACE_HEALTH_PATH",
+                  value: `/workspace/${runtimeId}/`,
+                },
                 { name: "PORT", value: "3000" },
                 {
                   name: "DATABASE_URL",

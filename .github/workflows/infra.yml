@@ -56,10 +56,21 @@ jobs:
 
       # Create the secrets in k8s for other deployments to use
       - name: Create secret in main cluster
+        env:
+          JWT_SECRET_FROM_GITHUB: ${{ secrets.JWT_SECRET }}
         run: |
+          jwt_secret="$JWT_SECRET_FROM_GITHUB"
+          if [ -z "$jwt_secret" ]; then
+            jwt_secret="$(kubectl get secret sky-secrets --namespace=default \
+              -o jsonpath='{.data.JWT_SECRET}' 2>/dev/null | base64 --decode || true)"
+          fi
+          if [ -z "$jwt_secret" ]; then
+            jwt_secret="$(openssl rand -hex 32)"
+          fi
+
           kubectl create secret generic sky-secrets --namespace=default \
             --from-literal=DATABASE_URL="${{ secrets.DATABASE_URL }}" \
-            --from-literal=JWT_SECRET="${{ secrets.JWT_SECRET }}" \
+            --from-literal=JWT_SECRET="$jwt_secret" \
             --from-literal=GCP_PROJECT_ID="${{ secrets.GCP_PROJECT_ID }}" \
             --from-literal=POSTGRES_USER="${{ secrets.POSTGRES_USER }}" \
             --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
@@ -85,6 +96,10 @@ jobs:
 
       - name: Refresh existing project services
         run: |
+          # Both proxies mount ConfigMap files via subPath and need an explicit
+          # restart to observe configuration changes.
+          kubectl rollout restart deployment/dynamic-nginx deployment/nginx-proxy
+
           for deployment in $(kubectl get deployment -o name); do
             case "$deployment" in
               *-agent-deployment|*-recovery|*-recovery-cron-deployment|*-ws-server-deployment)
@@ -100,3 +115,8 @@ jobs:
           kubectl rollout status deployment/dynamic-nginx
           kubectl rollout status deployment/sky-backend
           kubectl rollout status deployment/sky-frontend
+
+      - name: Apply database migrations
+        run: |
+          kubectl exec deployment/sky-backend -- \
+            sh -c 'cd /app/packages/db && bunx prisma migrate deploy'

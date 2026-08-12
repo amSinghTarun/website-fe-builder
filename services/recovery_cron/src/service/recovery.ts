@@ -43,16 +43,25 @@ export const recovery = async () => {
   }
 
   const gcpStoreHandler = gcpStore.getInstance();
-  const snapshotFileName = await gcpStoreHandler.retrieveSnapshotData(
-    databaseProjectId,
-    pathToVolume,
-  );
+  let snapshotFileName: string | null = null;
+
+  try {
+    snapshotFileName = await gcpStoreHandler.retrieveSnapshotData(
+      databaseProjectId,
+      pathToVolume,
+    );
+  } catch (error) {
+    console.error(
+      "Snapshot restore unavailable; continuing with workspace bootstrap:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 
   // The workspace process waits for this marker before scaffolding or starting.
   // This prevents a new Vite project from racing with snapshot extraction.
   await fs.writeFile(
     restoreReadyPath,
-    snapshotFileName ? `${snapshotFileName}\n` : "no snapshot\n",
+    snapshotFileName ? `${snapshotFileName}\n` : "no snapshot available\n",
   );
 
   let toolCallIdQuery: { id: { gt: number } } | {} = {};

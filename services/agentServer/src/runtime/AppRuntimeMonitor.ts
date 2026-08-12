@@ -28,6 +28,8 @@ export interface AppRuntimeRef {
   containerName: string;
   serviceName: string;
   servicePort: number;
+  httpHost?: string;
+  httpPath?: string;
 }
 
 export interface AppRuntimeState {
@@ -413,10 +415,14 @@ export class AppRuntimeMonitor {
         ? `[${podIP}]`
         : podIP
       : `${ref.serviceName}.${ref.namespace}.svc.cluster.local`;
-    const url = `http://${host}:${ref.servicePort}/`;
+    const httpPath = ref.httpPath?.startsWith("/")
+      ? ref.httpPath
+      : `/${ref.httpPath ?? ""}`;
+    const url = `http://${host}:${ref.servicePort}${httpPath}`;
 
     try {
       const response = await this.fetchFn(url, {
+        headers: ref.httpHost ? { Host: ref.httpHost } : undefined,
         signal: AbortSignal.timeout(this.healthTimeoutMs),
       });
 

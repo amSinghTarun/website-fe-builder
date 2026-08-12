@@ -278,6 +278,7 @@ export class GeminiProvider {
             error.status === 429
               ? "Limit reached, try after a minute"
               : `Error: ${error.message || JSON.stringify(error)}`;
+          summary += ` ${errorMessage}`;
           args.handler.onChunk &&
             args.handler.onChunk({ type: "error", response: errorMessage });
           hasToolCall = false;
@@ -514,13 +515,6 @@ export class GeminiProvider {
 
       let history = GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
 
-      let sessionTokens = await GeminiProvider.geminiClient.models.countTokens({
-        model: "gemini-2.5-flash",
-        contents: history,
-      });
-
-      // console.log(sessionTokens?.totalTokens ?? 0, history);
-
       if (args.id !== "1") {
         return {
           history: history,
@@ -529,31 +523,48 @@ export class GeminiProvider {
         };
       }
 
-      if ((sessionTokens?.totalTokens ?? 0) > 1000) {
-        let { contextedCount, history: newHistory } =
-          await GeminiProvider.contextualiseChat(
-            history,
-            this.sessionKey,
-            this.projectId,
-          );
-        if (contextedCount >= 3) {
-          let sessionSummary = await GeminiProvider.summariseChat(history);
+      if (history.length > 0) {
+        const sessionTokens =
+          await GeminiProvider.geminiClient.models.countTokens({
+            model: "gemini-2.5-flash",
+            contents: history,
+          });
 
-          GeminiProvider.sessions[this.sessionKey] = {
-            chat: this.createNewSession({
-              newSystemPrompt: sessionSummary,
-            }),
-            contextualiseCount: 0,
-          };
-        } else {
-          GeminiProvider.sessions[this.sessionKey] = {
-            chat: this.createNewSession({
-              history: newHistory,
-            }),
-            contextualiseCount: ++contextedCount,
-          };
+        if ((sessionTokens?.totalTokens ?? 0) > 1000) {
+          let { contextedCount, history: newHistory } =
+            await GeminiProvider.contextualiseChat(
+              history,
+              this.sessionKey,
+              this.projectId,
+            );
+          if (contextedCount >= 3) {
+            let sessionSummary = await GeminiProvider.summariseChat(history);
+
+            GeminiProvider.sessions[this.sessionKey] = {
+              chat: this.createNewSession({
+                newSystemPrompt: sessionSummary,
+              }),
+              contextualiseCount: 0,
+            };
+          } else {
+            GeminiProvider.sessions[this.sessionKey] = {
+              chat: this.createNewSession({
+                history: newHistory,
+              }),
+              contextualiseCount: ++contextedCount,
+            };
+          }
         }
+
+        const sessionTokensAfter =
+          await GeminiProvider.geminiClient.models.countTokens({
+            model: "gemini-2.5-flash",
+            contents: history,
+          });
+
+        console.log("SESSION TOKENS:", sessionTokensAfter.totalTokens);
       }
+
       await prisma.conversationHistory.update({
         where: {
           id: dbConverstaionId!.id,
@@ -563,20 +574,6 @@ export class GeminiProvider {
           output: summary,
         },
       });
-      let sessionTokens1 = await GeminiProvider.geminiClient.models.countTokens(
-        {
-          model: "gemini-2.5-flash",
-          contents: history,
-        },
-      );
-
-      console.log(
-        "BEFORE : ",
-        sessionTokens.totalTokens,
-        " || ",
-        "AFTER : ",
-        sessionTokens1.totalTokens,
-      );
 
       // GeminiProvider.sessions[this.projectId]!.chat = GeminiProvider.sessions[this.projectId]!.chat;
 
