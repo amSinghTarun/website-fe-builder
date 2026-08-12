@@ -41,6 +41,10 @@ COPY --parents ./apps/backend ./
 COPY --parents ./packages/db ./
 COPY --parents ./packages/runtime-id ./
 
+WORKDIR /app/packages/db
+
+RUN bunx prisma generate
+
 EXPOSE 3001
 
 WORKDIR /app/apps/backend
