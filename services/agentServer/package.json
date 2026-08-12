@@ -15,8 +15,10 @@
   "dependencies": {
     "@fastify/swagger": "^9.8.1",
     "@google/genai": "^2.9.0",
+    "@kubernetes/client-node": "^1.4.0",
     "@scalar/fastify-api-reference": "^1.61.0",
     "@sky/db": "workspace:*",
+    "@sky/runtime-id": "workspace:*",
     "bunqueue": "^2.8.23",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",

@@ -1,27 +1,31 @@
+import { toRuntimeId } from "@sky/runtime-id";
+
 export const workspaceDeploymentSpec = (
-  fe_library: string,
-  projectId: string,
+  feLibrary: string,
+  databaseProjectId: string,
 ) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
   return {
     apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: {
-      name: `${projectId}-workspace-runtime-deployment`,
+      name: `${runtimeId}-workspace`,
       labels: {
-        app: `${projectId}-workspace`,
+        app: `${runtimeId}-workspace`,
       },
     },
     spec: {
       replicas: 1,
       selector: {
         matchLabels: {
-          app: `${projectId}-workspace`,
+          app: `${runtimeId}-workspace`,
         },
       },
       template: {
         metadata: {
           labels: {
-            app: `${projectId}-workspace`,
+            app: `${runtimeId}-workspace`,
           },
         },
         spec: {
@@ -39,16 +43,49 @@ export const workspaceDeploymentSpec = (
                 "/bin/sh",
                 "-c",
                 `
-                if [ ! -d my-app ]; then
-                  npm create vite@latest my-app -- --template ${fe_library} 
+                set -eu
+                apk add --no-cache git
+
+                if [ ! -f /app/my-app/package.json ] || [ ! -d /app/my-app/.git ]; then
+                  until [ -f /app/.sky-restore-ready ]; do sleep 1; done
                 fi
-                && cd my-app 
-                && npm install 
-                && npm run dev -- --host 0.0.0.0`,
+
+                if [ ! -f /app/my-app/package.json ]; then
+                  cd /app
+                  npm create vite@latest my-app -- --template ${feLibrary}
+                fi
+
+                cd /app/my-app
+                npm install
+
+                if [ ! -d .git ]; then
+                  git init -b main
+                  git config user.name "SKY Workspace"
+                  git config user.email "workspace@sky.local"
+                  git add .
+                  git commit -m "Initial generated workspace" --allow-empty
+                fi
+
+                exec npm run dev -- --host 0.0.0.0 --base /workspace/${runtimeId}/`,
               ],
+              startupProbe: {
+                tcpSocket: { port: 5173 },
+                periodSeconds: 1,
+                failureThreshold: 120,
+              },
+              readinessProbe: {
+                httpGet: {
+                  path: `/workspace/${runtimeId}/`,
+                  port: 5173,
+                },
+                periodSeconds: 2,
+                timeoutSeconds: 1,
+                failureThreshold: 3,
+              },
+              terminationMessagePolicy: "FallbackToLogsOnError",
               volumeMounts: [
                 {
-                  name: `${projectId}-volume`,
+                  name: `${runtimeId}-volume`,
                   mountPath: "/app",
                 },
               ],
@@ -56,9 +93,9 @@ export const workspaceDeploymentSpec = (
           ],
           volumes: [
             {
-              name: `${projectId}-volume`,
+              name: `${runtimeId}-volume`,
               persistentVolumeClaim: {
-                claimName: `${projectId}-pvc`,
+                claimName: `${runtimeId}-pvc`,
               },
             },
           ],

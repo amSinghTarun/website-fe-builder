@@ -20,15 +20,76 @@ import "dotenv/config";
 import { customAlphabet } from "nanoid";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
+import { toRuntimeId } from "@sky/runtime-id";
+import { Readable } from "node:stream";
 
 const PORT = 3001;
+const projectsBaseUrl = (
+  process.env.PROJECTS_BASE_URL?.trim() || "http://project.tarunn.co"
+).replace(/\/+$/, "");
+
+function projectRuntimeRoutes(databaseProjectId: string) {
+  const runtimeId = toRuntimeId(databaseProjectId);
+  const workspacePath = `/workspace/${runtimeId}/`;
+
+  return {
+    runtimeId,
+    agentPath: `/agent/${runtimeId}`,
+    workspacePath,
+    workspaceUrl: `${projectsBaseUrl}${workspacePath}`,
+    websocketPath: `/ws/${runtimeId}`,
+  };
+}
+
+async function openAgentStream(
+  databaseProjectId: string,
+  message: string,
+): Promise<Response> {
+  const runtimeId = toRuntimeId(databaseProjectId);
+  const url = `http://${runtimeId}-agent-service.default.svc.cluster.local:3000/chat`;
+  let lastError = "Agent runtime is not ready";
+
+  for (let attempt = 1; attempt <= 60; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, projectId: databaseProjectId }),
+      });
+
+      if (response.ok) return response;
+
+      lastError = `Agent returned ${response.status}: ${await response.text()}`;
+      if (![502, 503, 504].includes(response.status)) break;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    if (attempt < 60) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+  }
+
+  throw new Error(`Unable to reach the project agent: ${lastError}`);
+}
+
 const app = fastify({
   logger: true,
 }).withTypeProvider<ZodTypeProvider>();
 
 await app.register(cors, {
   hook: "onRequest",
-  origin: "http://localhost:5173",
+  origin: (origin, callback) => {
+    const allowedOrigins = new Set(
+      (process.env.CORS_ORIGINS ??
+        "http://localhost:5173,http://sky.tarunn.co,https://sky.tarunn.co")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+
+    callback(null, !origin || allowedOrigins.has(origin));
+  },
   credentials: true,
 });
 
@@ -214,11 +275,15 @@ app.get(
       where: {
         userId: request.userId,
       },
+      orderBy: { updatedAt: "desc" },
     });
     return reply.code(200).send({
       status: "success",
       message: "Projects of user",
-      data: userProjects,
+      data: userProjects.map((project) => ({
+        ...project,
+        ...projectRuntimeRoutes(project.id),
+      })),
     });
   },
 );
@@ -240,7 +305,9 @@ app.get(
       where: {
         projectId: request.query.projectId as string,
         type: "TEXT_MESSAGE",
+        project: { userId: request.userId },
       },
+      orderBy: { id: "asc" },
     });
     console.log(chatHistory);
     return reply.code(200).send({
@@ -289,31 +356,42 @@ app.post(
     },
   },
   async (request, reply) => {
-    const { id: projectId, library: feLibrary } = await prisma.project.update({
+    const project = await prisma.project.findFirst({
       where: {
         id: request.body.projectId,
+        userId: request.userId,
       },
+      select: { id: true, library: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    const { id: projectId, library: feLibrary } = await prisma.project.update({
+      where: { id: project.id },
       data: {
         initialPrompt: request.body.initialPrompt,
       },
     });
 
-    await prisma.conversationHistory.create({
-      data: {
-        contents: request.body.initialPrompt,
-        from: "USER",
-        type: "TEXT_MESSAGE",
-        projectId: request.body.projectId,
-      },
-    });
-
-    await spinupK8sResources(feLibrary, `sky-${projectId}`);
+    const runtime = await spinupK8sResources(feLibrary, projectId);
 
     // need to return the url of server so that we can display frontend as per it
 
     return reply
       .code(201)
-      .send({ status: "success", message: "Infra created" });
+      .send({
+        status: "success",
+        message: "Infra created",
+        data: {
+          ...runtime,
+          ...projectRuntimeRoutes(projectId),
+        },
+      });
   },
 );
 
@@ -327,14 +405,47 @@ app.get(
   },
 );
 
-app.get(
+app.post(
   "/sendUserMessage",
   {
     onRequest: checkAuth,
+    schema: {
+      body: z.object({
+        projectId: z.string(),
+        message: z.string().min(1),
+      }),
+    },
   },
   async (request, reply) => {
-    // I should call the api of agent and send message there but how to call the reverse proxy api for agent
-    // send the changes files as well, so that browser can store them in state
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.body.projectId,
+        userId: request.userId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    const agentResponse = await openAgentStream(
+      project.id,
+      request.body.message,
+    );
+
+    if (!agentResponse.body) {
+      throw new Error("Agent returned an empty response stream");
+    }
+
+    return reply
+      .header("Content-Type", "text/event-stream")
+      .header("Cache-Control", "no-cache")
+      .header("X-Accel-Buffering", "no")
+      .send(Readable.fromWeb(agentResponse.body as any));
   },
 );
 

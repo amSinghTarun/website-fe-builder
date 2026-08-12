@@ -3,31 +3,51 @@ kind: ConfigMap
 metadata:
   name: confnginx
 data:
-  default.conf: | 
+  default.conf: |
     server {
       listen 8080;
+      server_name _;
 
-      server_name project.tarunn.co;
-      resolver kube-dns.kube-system.svc.cluster.local valid=5s;
+      resolver kube-dns.kube-system.svc.cluster.local valid=30s ipv6=off;
 
       # Agent/API
-      location ~ ^/(?<project>[^/]+)$ {
-        proxy_pass http://$project-agent.default.svc.cluster.local:3001;
+      location ~ ^/agent/(?<runtime_id>[^/]+)(?<rest>/.*)?$ {
+        proxy_buffering off;
+        proxy_pass http://$runtime_id-agent-service.default.svc.cluster.local:3000$rest$is_args$args;
+
         proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
       }
 
       # Workspace frontend
-      location ~ ^/workspace/(?<project>[^/]+)(?<rest>/.*)?$ {
-        proxy_pass http://$project-workspace.default.svc.cluster.local:5173$rest;
+      location ~ ^/workspace/(?<runtime_id>[^/]+)(?<rest>/.*)?$ {
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Preserve /workspace/<runtime_id>/ because Vite is started with that base.
+        proxy_pass http://$runtime_id-workspace-service.default.svc.cluster.local:5173;
+
         proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
       }
 
       # WebSocket
-      location ~ ^/ws/(?<project>[^/]+)$ {
+      location ~ ^/ws/(?<runtime_id>[^/]+)$ {
+        proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_pass http://$project-ws-server.default.svc.cluster.local:8080;
+        proxy_set_header Connection "upgrade";
+
         proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_pass http://$runtime_id-ws-server-service.default.svc.cluster.local:8080;
       }
     }
 

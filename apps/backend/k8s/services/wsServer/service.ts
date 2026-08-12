@@ -1,19 +1,25 @@
-export const wsServerServiceSpec = (projectId: string) => ({
-  apiVersion: "v1",
-  kind: "Service",
-  metadata: {
-    name: `${projectId}-ws-server-service`,
-  },
-  spec: {
-    type: "ClusterIP",
-    selector: {
-      app: `${projectId}-ws-server`,
+import { toRuntimeId } from "@sky/runtime-id";
+
+export const wsServerServiceSpec = (databaseProjectId: string) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
+  return {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      name: `${runtimeId}-ws-server-service`,
     },
-    ports: [
-      {
-        port: 8080,
-        targetPort: 8080,
+    spec: {
+      type: "ClusterIP",
+      selector: {
+        app: `${runtimeId}-ws-server`,
       },
-    ],
-  },
-});
+      ports: [
+        {
+          port: 8080,
+          targetPort: 8080,
+        },
+      ],
+    },
+  };
+};

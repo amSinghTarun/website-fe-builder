@@ -12,6 +12,7 @@ import { useAuthStore } from "./store/authStore"
 import type { Route } from "./+types/root";
 import "./app.css";
 import { useEffect } from "react";
+import { apiUrl } from "./config";
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -32,7 +33,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   
   useEffect(()=> {
     const checkAuth = async() => {
-      let res = await fetch("http://localhost:3001/whoAmI", {
+      let res = await fetch(apiUrl("/whoAmI"), {
         credentials: "include"
       });
 

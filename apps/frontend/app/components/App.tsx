@@ -3,6 +3,7 @@ import { useAuthStore } from "../store/authStore";
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
+import { apiUrl } from "../config";
 
 type ConversationType = string; // narrow this to your actual enum if exported
 type MessageFrom = "USER" | "ASSISTANT";
@@ -48,6 +49,7 @@ export function App() {
   const [message, setMessage] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -65,16 +67,20 @@ export function App() {
       setLoadingName(true);
       try {
         // TODO: swap for GET /projects/:id once available
-        const res = await fetch("http://localhost:3001/projects", {
+        const res = await fetch(apiUrl("/projects"), {
           credentials: "include",
         });
         if (!res.ok) throw new Error("Failed to load project");
 
         const json = await res.json();
         const match = (json.data ?? []).find(
-          (p: { id: string; title: string }) => p.id === projectId
+          (p: { id: string; title: string; workspaceUrl?: string }) =>
+            p.id === projectId
         );
-        if (!cancelled) setResolvedName(match ? match.title : null);
+        if (!cancelled) {
+          setResolvedName(match ? match.title : null);
+          setPreviewUrl(match?.workspaceUrl ?? null);
+        }
       } catch (err: unknown) {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : "Unknown error";
@@ -101,7 +107,7 @@ export function App() {
       setLoadingHistory(true);
       try {
         const res = await fetch(
-          `http://localhost:3001/chat?projectId=${encodeURIComponent(projectId)}`,
+          apiUrl(`/chat?projectId=${encodeURIComponent(projectId)}`),
           { credentials: "include" }
         );
 
@@ -117,11 +123,25 @@ export function App() {
           (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
         );
 
-        const mapped: ChatMessage[] = sorted.map((r) => ({
-          id: String(r.id),
-          from: r.from === "USER" ? "user" : "assistant",
-          message: r.contents,
-        }));
+        const mapped: ChatMessage[] = sorted.flatMap((record) => {
+          const entries: ChatMessage[] = [
+            {
+              id: String(record.id),
+              from: record.from === "USER" ? "user" : "assistant",
+              message: record.contents,
+            },
+          ];
+
+          if (record.from === "USER" && record.output?.trim()) {
+            entries.push({
+              id: `${record.id}-output`,
+              from: "assistant",
+              message: record.output.trim(),
+            });
+          }
+
+          return entries;
+        });
 
         if (!cancelled) setMessages(mapped);
       } catch (err: unknown) {
@@ -146,6 +166,87 @@ export function App() {
 
   const isFirstMessage = messages.length === 0;
 
+  const streamAgentMessage = async (prompt: string) => {
+    const response = await fetch(apiUrl("/sendUserMessage"), {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, message: prompt }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      throw new Error(error?.message || "The project agent could not start");
+    }
+
+    if (!response.body) throw new Error("The project agent returned no stream");
+
+    const assistantId = crypto.randomUUID();
+    let assistantStarted = false;
+    let buffer = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    const consumeEvent = (event: string) => {
+      const data = event
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (!data) return;
+
+      const chunk = JSON.parse(data) as {
+        type: string;
+        response?: unknown;
+      };
+
+      if (chunk.type === "message" && typeof chunk.response === "string") {
+        if (!assistantStarted) {
+          assistantStarted = true;
+          setMessages((previous) => [
+            ...previous,
+            { id: assistantId, from: "assistant", message: chunk.response! as string },
+          ]);
+        } else {
+          setMessages((previous) =>
+            previous.map((entry) =>
+              entry.id === assistantId
+                ? { ...entry, message: entry.message + chunk.response }
+                : entry,
+            ),
+          );
+        }
+      }
+
+      if (chunk.type === "runtimeBlocked") {
+        toast.error("The generated app is still unhealthy after automatic repairs.");
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      events.forEach(consumeEvent);
+
+      if (done) break;
+    }
+
+    if (buffer.trim()) consumeEvent(buffer);
+    if (!assistantStarted) {
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: assistantId,
+          from: "assistant",
+          message: "The project update completed.",
+        },
+      ]);
+    }
+  };
+
   const sendPrompt = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || isGenerating) return;
@@ -167,7 +268,7 @@ export function App() {
 
     try {
       if (isFirstMessage) {
-        const res = await fetch("http://localhost:3001/newChat", {
+        const res = await fetch(apiUrl("/newChat"), {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
@@ -180,26 +281,10 @@ export function App() {
         }
 
         const json = await res.json();
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            from: "assistant",
-            message: json.data?.message ?? "Got it — building your project now.",
-          },
-        ]);
-      } else {
-        // TODO: subsequent messages need their own endpoint (e.g. /sendMessage)
-        await new Promise((r) => setTimeout(r, 1000));
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            from: "assistant",
-            message: `Working on "${trimmed}" — wire up the follow-up message endpoint here.`,
-          },
-        ]);
+        setPreviewUrl(json.data?.workspaceUrl ?? null);
       }
+
+      await streamAgentMessage(trimmed);
     } catch (err: unknown) {
       const errMessage = err instanceof Error ? err.message : "Something went wrong";
       toast.error(errMessage);
@@ -341,8 +426,16 @@ export function App() {
                   <Sparkles className="mx-auto mb-3 text-zinc-700" size={24} />
                   Your app will appear here once you send a prompt.
                 </div>
+              ) : activeTab === "preview" && previewUrl ? (
+                <iframe
+                  title="app-preview"
+                  className="w-full h-full rounded-b-lg bg-white"
+                  src={previewUrl}
+                />
               ) : activeTab === "preview" ? (
-                <iframe title="app-preview" className="w-full h-full rounded-b-lg bg-white" src="about:blank" />
+                <div className="text-center text-zinc-600 text-sm">
+                  The preview will appear when the project runtime is ready.
+                </div>
               ) : (
                 <pre className="w-full h-full overflow-auto p-4 text-xs text-zinc-400 font-mono">
                   {"// Generated code will render here"}

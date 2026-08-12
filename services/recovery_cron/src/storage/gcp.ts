@@ -1,6 +1,7 @@
 import { Storage } from "@google-cloud/storage";
 import unzipper from "unzipper";
 import "dotenv/config";
+import fs from "node:fs/promises";
 // For more information on ways to initialize Storage, please see
 // https://googleapis.dev/nodejs/storage/latest/Storage.html
 
@@ -27,20 +28,23 @@ export class gcpStore {
 
   //
   public async putDataInBucket(
-    uploadData: Uint8Array<ArrayBuffer>,
+    uploadData: Uint8Array,
     cloudFileName: string,
   ) {
     await this.upsertBucket();
 
     try {
-      let file = await gcpStore.storage
+      const file = gcpStore.storage
         .bucket(this.bucketName)
-        .file(`${cloudFileName}`)
-        .create(uploadData);
+        .file(`${cloudFileName}`);
+      await file.save(uploadData, {
+        resumable: false,
+        contentType: "application/zip",
+      });
 
       // let file = gcpStore.storage
       //   .bucket(this.bucketName)
-      //   .file(`${projectId}/${cloudFileName}`);
+      //   .file(`${databaseProjectId}/${cloudFileName}`);
 
       // const archive = new ZipArchive({ zlib: { level: 4 } });
       // const gcsWriteStream = file.createWriteStream({
@@ -65,7 +69,7 @@ export class gcpStore {
       //   });
       // });
 
-      console.log("BACKUP UPLOADED", file);
+      console.log("BACKUP UPLOADED", file.name);
       return file;
     } catch (error) {
       console.log("CRON ERROR : UPLOADING PROJECT BACKUP", error);
@@ -74,14 +78,14 @@ export class gcpStore {
   }
 
   public async retrieveSnapshotData(
-    projectId: string,
+    databaseProjectId: string,
     destinationPath: string,
   ): Promise<string | null> {
     await this.upsertBucket();
 
     let [files] = await gcpStore.storage
       .bucket(this.bucketName)
-      .getFiles({ prefix: projectId + "/" });
+      .getFiles({ prefix: databaseProjectId + "/" });
 
     files.sort(
       (a, b) =>
@@ -94,6 +98,8 @@ export class gcpStore {
     if (!latestZipFile) {
       return null;
     }
+
+    await fs.mkdir(destinationPath, { recursive: true });
 
     await new Promise((resolve, reject) => {
       latestZipFile

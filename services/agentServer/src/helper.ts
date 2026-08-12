@@ -41,6 +41,21 @@ export const rejectSubAgent = (id: string, err: any) => {
   subAgentsResponse[id]?.reject(err);
 };
 
+export const consumeSubAgent = async (id: string): Promise<any | undefined> => {
+  const subAgent = subAgents[id];
+  if (!subAgent) return undefined;
+
+  try {
+    return await subAgent.completion;
+  } finally {
+    delete subAgents[id];
+    delete subAgentsResponse[id];
+  }
+};
+
+export const getOutstandingSubAgentIds = (): string[] =>
+  Object.keys(subAgents);
+
 export const resolveWorkspacePath = (
   cwd: string,
   relativePath: string,

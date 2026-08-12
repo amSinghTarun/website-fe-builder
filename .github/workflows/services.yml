@@ -1,5 +1,5 @@
 name: service
-run-name: build and push servie and packages images
+run-name: Build and publish application images
 
 on:
   push:
@@ -15,13 +15,13 @@ concurrency:
 
 jobs:
   services_images:
-    name: build and publish services image
+    name: Build and publish images
     runs-on: ubuntu-latest
     steps:
       
       # The actions/checkout@v4 step downloads your source code from GitHub onto the virtual machine running your workflow
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -66,3 +66,22 @@ jobs:
             tarunsingh28/sky-recovery-cron:latest
             tarunsingh28/sky-recovery-cron:${{ github.sha }}
 
+      - name: Build and push backend
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./apps/backend/Dockerfile
+          push: true
+          tags: |
+            tarunsingh28/sky-backend:latest
+            tarunsingh28/sky-backend:${{ github.sha }}
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./apps/frontend/Dockerfile
+          push: true
+          tags: |
+            tarunsingh28/sky-frontend:latest
+            tarunsingh28/sky-frontend:${{ github.sha }}

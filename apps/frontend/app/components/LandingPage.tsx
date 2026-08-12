@@ -5,6 +5,7 @@ import { useNavigate } from "react-router";
 import { useEffect, useState, useRef } from "react";
 import { features } from "../features";
 import { toast } from "sonner";
+import { apiUrl } from "../config";
 
 type Project = {
   id: string;
@@ -62,7 +63,7 @@ export function LandingPage() {
     setLoadingProjects(true);
     setProjectsError(null);
     try {
-      const res = await fetch("http://localhost:3001/projects", {
+      const res = await fetch(apiUrl("/projects"), {
         credentials: "include",
       });
 
@@ -101,7 +102,7 @@ export function LandingPage() {
 
     setCreatingProject(true);
     try {
-      const res = await fetch("http://localhost:3001/createProject", {
+      const res = await fetch(apiUrl("/createProject"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },

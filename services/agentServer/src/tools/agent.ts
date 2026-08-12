@@ -1,8 +1,8 @@
 import { type FunctionDeclaration } from "@google/genai";
-import { queueMerge, registerSubAgent, subAgents } from "../helper";
+import { consumeSubAgent, queueMerge, registerSubAgent } from "../helper";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { Tools } from "../types/tools";
+import { Tools, type ToolContext, type ToolResult } from "../types/tools";
 
 export const mergeWorktree = (args: {
   id: string;
@@ -10,7 +10,11 @@ export const mergeWorktree = (args: {
   mainWorktreePath: string;
 }): Promise<any> => {
   const branchName = `agent-${args.id}`;
-  const worktreePath = path.resolve(process.cwd(), "../worktrees", branchName);
+  const worktreePath = path.resolve(
+    args.mainWorktreePath,
+    "../worktrees",
+    branchName,
+  );
 
   return queueMerge(async () => {
     try {
@@ -69,8 +73,8 @@ export const agentTool = {
         baseBranch: string;
         cwd: string;
       },
-      context: { cwd: string },
-    ) => {
+      context: ToolContext,
+    ): ToolResult => {
       const branchName = `agent-${args.id}`;
       const base = args.baseBranch;
       const worktreePath = path.resolve(
@@ -83,6 +87,7 @@ export const agentTool = {
         execSync(
           `git worktree add -b ${branchName} "${worktreePath}" ${base}`,
           {
+            cwd: context.cwd,
             stdio: "pipe",
           },
         );
@@ -122,20 +127,43 @@ export const agentTool = {
         required: ["id"],
       },
     } as FunctionDeclaration,
-    executable: async (args: { id: string }, _context: { cwd: string }) => {
+    executable: async (
+      args: { id: string },
+      _context: ToolContext,
+    ): Promise<ToolResult> => {
       let response = {
         status: "ERROR : NO AGENT WITH THAT ID FOUND",
         id: args.id,
       };
-      const result = await subAgents[args.id]?.completion;
+      try {
+        const result = await consumeSubAgent(args.id);
 
-      return {
-        response: result ? { ...result, id: args.id } : response,
-        yield: {
-          type: "waitingForAgent",
-          response: args.id,
-        },
-      };
+        return {
+          response: result ? { ...result, id: args.id } : response,
+          yield: {
+            type: "waitingForAgent",
+            response: args.id,
+          },
+          ...(result?.status === "MERGED" && {
+            effects: {
+              workspaceChanged: true,
+              runtimeMayChange: true,
+            },
+          }),
+        };
+      } catch (error) {
+        return {
+          response: {
+            status: "ERROR",
+            id: args.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          yield: {
+            type: "waitingForAgent",
+            response: args.id,
+          },
+        };
+      }
     },
   },
   getCurrentWorkspace: {
@@ -149,12 +177,15 @@ export const agentTool = {
         properties: {},
       },
     } as FunctionDeclaration,
-    executable: async (context: { cwd: string }) => {
+    executable: async (
+      _args: Record<string, never>,
+      context: ToolContext,
+    ): Promise<ToolResult> => {
       return {
         response: {
-          cwd: process.cwd(),
-          isWorktree: process.cwd().includes("/worktrees/"),
-          workspaceName: process.cwd().split("/").pop(),
+          cwd: context.cwd,
+          isWorktree: context.cwd.includes("/worktrees/"),
+          workspaceName: context.cwd.split("/").pop(),
         },
       };
     },

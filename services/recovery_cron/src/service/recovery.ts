@@ -2,25 +2,68 @@ import { gcpStore } from "../storage/gcp";
 import fs from "node:fs/promises";
 import { prisma } from "@sky/db";
 import axios from "axios";
+import path from "node:path";
+import { toRuntimeId } from "@sky/runtime-id";
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export const recovery = async () => {
-  let pathToVolume = "path to volume";
-  let projectId = process.env.PROJECT_ID;
+  const pathToVolume =
+    process.env.WORKSPACE_PATH?.trim() || "/user-app/my-app";
+  const databaseProjectId = process.env.DATABASE_PROJECT_ID?.trim();
+  const namespace = process.env.APP_NAMESPACE?.trim() || "default";
+  const agentPort = Number(process.env.AGENT_PORT ?? "3000");
 
-  let volumeExist = await fs.exists(pathToVolume);
+  if (!databaseProjectId) {
+    console.error("Recovery disabled: DATABASE_PROJECT_ID is required");
+    return;
+  }
 
-  if (volumeExist) return;
+  const runtimeId = toRuntimeId(databaseProjectId);
+  const restoreReadyPath = path.join(
+    path.dirname(pathToVolume),
+    ".sky-restore-ready",
+  );
 
-  let gcpStoreHandler = gcpStore.getInstance();
-  let snapshotFileName = await gcpStoreHandler.retrieveSnapshotData(
-    "ENV_<PROJECT_ID>",
+  try {
+    await Promise.all([
+      fs.access(path.join(pathToVolume, "package.json")),
+      fs.access(path.join(pathToVolume, ".git")),
+    ]);
+    await fs.writeFile(restoreReadyPath, "workspace already initialized\n");
+    return;
+  } catch {
+    // A restored snapshot intentionally excludes Git metadata, so recovery is
+    // still required when package.json exists but .git does not.
+    await fs.unlink(restoreReadyPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+
+  const gcpStoreHandler = gcpStore.getInstance();
+  const snapshotFileName = await gcpStoreHandler.retrieveSnapshotData(
+    databaseProjectId,
     pathToVolume,
+  );
+
+  // The workspace process waits for this marker before scaffolding or starting.
+  // This prevents a new Vite project from racing with snapshot extraction.
+  await fs.writeFile(
+    restoreReadyPath,
+    snapshotFileName ? `${snapshotFileName}\n` : "no snapshot\n",
   );
 
   let toolCallIdQuery: { id: { gt: number } } | {} = {};
 
   if (snapshotFileName) {
-    toolCallIdQuery = { id: { gt: +snapshotFileName.split(".")[0]! } };
+    const snapshotConversationId = Number(
+      path.basename(snapshotFileName, ".zip"),
+    );
+    if (Number.isFinite(snapshotConversationId)) {
+      toolCallIdQuery = { id: { gt: snapshotConversationId } };
+    }
   }
 
   // the above step store the snapshot data in the volume
@@ -30,22 +73,31 @@ export const recovery = async () => {
   let toolCallsToPerform = await prisma.conversationHistory.findMany({
     where: {
       ...toolCallIdQuery,
-      projectId: projectId,
+      projectId: databaseProjectId,
       type: "TOOL_CALL",
     },
   });
 
-  try {
-    const response = await axios.post(
-      `http://${projectId}-agent.default.svc.cluster.local:3001`,
-      {
-        toolCalls: toolCallsToPerform,
-      },
-      { timeout: 10000 },
-    );
-    console.log(response.data);
-  } catch (err: any) {
-    console.error("Recover request to agent failed:", err.message);
+  const replayUrl = `http://${runtimeId}-agent-service.${namespace}.svc.cluster.local:${Number.isFinite(agentPort) ? agentPort : 3000}/executeFncCalls`;
+
+  for (let attempt = 1; attempt <= 30; attempt++) {
+    try {
+      const response = await axios.post(
+        replayUrl,
+        { toolCalls: toolCallsToPerform },
+        { timeout: 3_000 },
+      );
+      console.log("Recovery replay result:", response.data);
+      return;
+    } catch (error: any) {
+      if (attempt === 30) {
+        console.error(
+          "Recovery replay failed after waiting for the agent:",
+          error.message,
+        );
+        return;
+      }
+      await sleep(2_000);
+    }
   }
-  console.log(toolCallsToPerform);
 };

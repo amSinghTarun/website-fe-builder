@@ -1,36 +1,42 @@
-export const wsServerDeploymentSpec = (projectId: string) => ({
-  apiVersion: `apps/v1`,
-  kind: `Deployment`,
-  metadata: {
-    name: `${projectId}-ws-server-deployment`,
-    labels: {
-      app: `${projectId}-ws-server`,
-    },
-  },
-  spec: {
-    replicas: 1,
-    selector: {
-      matchLabels: {
-        app: `${projectId}-ws-server`,
+import { toRuntimeId } from "@sky/runtime-id";
+
+export const wsServerDeploymentSpec = (databaseProjectId: string) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
+  return {
+    apiVersion: `apps/v1`,
+    kind: `Deployment`,
+    metadata: {
+      name: `${runtimeId}-ws-server-deployment`,
+      labels: {
+        app: `${runtimeId}-ws-server`,
+        "sky.dev/component": "websocket",
       },
     },
-
-    template: {
-      metadata: {
-        labels: {
-          app: `${projectId}-ws-server`,
+    spec: {
+      replicas: 1,
+      selector: {
+        matchLabels: {
+          app: `${runtimeId}-ws-server`,
         },
       },
-
-      spec: {
-        containers: [
-          {
-            name: `${projectId}-ws-server`,
-            image: "tarunsingh28/sky-ws-server",
-            ports: [{ containerPort: 8080 }],
+      template: {
+        metadata: {
+          labels: {
+            app: `${runtimeId}-ws-server`,
           },
-        ],
+        },
+        spec: {
+          containers: [
+            {
+              name: `${runtimeId}-ws-server`,
+              image: "tarunsingh28/sky-ws-server",
+              imagePullPolicy: "Always",
+              ports: [{ containerPort: 8080 }],
+            },
+          ],
+        },
       },
     },
-  },
-});
+  };
+};

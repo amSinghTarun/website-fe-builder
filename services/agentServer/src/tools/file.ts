@@ -7,7 +7,7 @@ import {
   existsSync,
 } from "fs";
 import { resolveWorkspacePath } from "../helper";
-import { Tools } from "../types/tools";
+import { Tools, type ToolContext, type ToolResult } from "../types/tools";
 
 export let fileTools = {
   readDirectory: {
@@ -27,7 +27,10 @@ export let fileTools = {
         required: ["directoryPath"],
       },
     } as FunctionDeclaration,
-    executable: (args: { directoryPath: string }, context: { cwd: string }) => {
+    executable: (
+      args: { directoryPath: string },
+      context: ToolContext,
+    ): ToolResult => {
       const directory = resolveWorkspacePath(context.cwd, args.directoryPath);
 
       const entries = readdirSync(directory, {
@@ -58,7 +61,10 @@ export let fileTools = {
         required: ["filePath"],
       },
     } as FunctionDeclaration,
-    executable: (args: { filePath: string }, context: { cwd: string }) => {
+    executable: (
+      args: { filePath: string },
+      context: ToolContext,
+    ): ToolResult => {
       const filePath = resolveWorkspacePath(context.cwd, args.filePath);
       const content = readFileSync(filePath, "utf-8");
 
@@ -87,14 +93,15 @@ export let fileTools = {
     } as FunctionDeclaration,
     executable: (
       args: { fileCreatePath: string },
-      context: { cwd: string },
-    ) => {
+      context: ToolContext,
+    ): ToolResult => {
       const filePath = resolveWorkspacePath(context.cwd, args.fileCreatePath);
 
       writeFileSync(filePath, "", { flag: "wx" });
 
       return {
         response: `Created empty file at ${args.fileCreatePath}`,
+        effects: { workspaceChanged: true, runtimeMayChange: true },
       };
     },
   },
@@ -118,14 +125,15 @@ export let fileTools = {
     } as FunctionDeclaration,
     executable: (
       args: { fileDeletePath: string },
-      context: { cwd: string },
-    ) => {
+      context: ToolContext,
+    ): ToolResult => {
       const filePath = resolveWorkspacePath(context.cwd, args.fileDeletePath);
 
       unlinkSync(filePath);
 
       return {
         response: `Deleted ${args.fileDeletePath}`,
+        effects: { workspaceChanged: true, runtimeMayChange: true },
       };
     },
   },
@@ -169,29 +177,38 @@ export let fileTools = {
         oldString?: string;
         newString?: string;
       },
-      context: { cwd: string },
-    ) => {
+      context: ToolContext,
+    ): ToolResult => {
       const filePath = resolveWorkspacePath(context.cwd, args.filePath);
 
       if (typeof args.content === "string") {
         writeFileSync(filePath, args.content, "utf-8");
-        return `Wrote ${args.content.length} characters to ${args.filePath}`;
+        return {
+          response: `Wrote ${args.content.length} characters to ${args.filePath}`,
+          effects: { workspaceChanged: true, runtimeMayChange: true },
+        };
       }
 
       if (typeof args.oldString === "string") {
         if (!existsSync(filePath)) {
-          return `Error: cannot edit ${args.filePath} because it does not exist.`;
+          return {
+            response: `Error: cannot edit ${args.filePath} because it does not exist.`,
+          };
         }
 
         const current = readFileSync(filePath, "utf-8");
         const occurrences = current.split(args.oldString).length - 1;
 
         if (occurrences === 0) {
-          return `Error: oldString was not found in ${args.filePath}. No changes made.`;
+          return {
+            response: `Error: oldString was not found in ${args.filePath}. No changes made.`,
+          };
         }
 
         if (occurrences > 1) {
-          return `Error: oldString matched ${occurrences} times in ${args.filePath}; it must be unique. No changes made.`;
+          return {
+            response: `Error: oldString matched ${occurrences} times in ${args.filePath}; it must be unique. No changes made.`,
+          };
         }
 
         const replacement = args.newString ?? "";
@@ -199,7 +216,10 @@ export let fileTools = {
 
         writeFileSync(filePath, updated, "utf-8");
 
-        return `Replaced 1 occurrence in ${args.filePath}`;
+        return {
+          response: `Replaced 1 occurrence in ${args.filePath}`,
+          effects: { workspaceChanged: true, runtimeMayChange: true },
+        };
       }
 
       return {

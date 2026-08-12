@@ -1,6 +1,32 @@
 import { gcpStore } from "../storage/gcp";
 import { Cron } from "croner";
-import { prisma, $Enums as PrismaEnums } from "@sky/db";
+import { prisma } from "@sky/db";
+import { ZipArchive } from "archiver";
+import { PassThrough } from "node:stream";
+
+export async function createWorkspaceArchive(
+  workspacePath: string,
+): Promise<Buffer> {
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  const output = new PassThrough();
+  const chunks: Buffer[] = [];
+
+  output.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const completed = new Promise<Buffer>((resolve, reject) => {
+    output.on("end", () => resolve(Buffer.concat(chunks)));
+    output.on("error", reject);
+    archive.on("error", reject);
+  });
+
+  archive.pipe(output);
+  archive.glob("**/*", {
+    cwd: workspacePath,
+    dot: true,
+    ignore: ["node_modules/**", ".git/**"],
+  });
+  await archive.finalize();
+  return completed;
+}
 
 export const backupCron = () => {
   new Cron(
@@ -15,21 +41,22 @@ export const backupCron = () => {
       },
     },
     async () => {
-      let projectId = "ENV<PROJECT_ID>";
+      const databaseProjectId = process.env.DATABASE_PROJECT_ID?.trim();
+      const volumePath =
+        process.env.WORKSPACE_PATH?.trim() || "/user-app/my-app";
+
+      if (!databaseProjectId) {
+        console.error("Backup skipped: DATABASE_PROJECT_ID is required");
+        return;
+      }
 
       console.log("Cron job to upload backup started");
       let gcpStoreHandler = gcpStore.getInstance();
 
-      //data from the volume, exclude node_modules
-      let volumePath = "/app";
-
-      // access the database before reading the directory
-      let uploadData = Bun.gzipSync(volumePath);
-
       // get the last done functionCall from the database and use it's updated time as timestamp on the file
       let lastDoneToolCall = await prisma.conversationHistory.findFirst({
         where: {
-          projectId: projectId,
+          projectId: databaseProjectId,
           from: "USER",
         },
         orderBy: {
@@ -44,7 +71,26 @@ export const backupCron = () => {
         },
       });
 
-      if (!lastDoneToolCall || !lastDoneToolCall.completed) return;
+      if (
+        !lastDoneToolCall ||
+        !lastDoneToolCall.completed ||
+        lastDoneToolCall.snapshotCaptured
+      ) {
+        return;
+      }
+
+      const uploadData = await createWorkspaceArchive(volumePath);
+
+      // Record the latest history row included in this snapshot. Tool calls
+      // belonging to the completed user turn have IDs after its TEXT_MESSAGE
+      // row, so using the user row ID would replay already-snapshotted writes.
+      const snapshotHighWaterMark = await prisma.conversationHistory.findFirst({
+        where: { projectId: databaseProjectId },
+        orderBy: { id: "desc" },
+        select: { id: true },
+      });
+
+      if (!snapshotHighWaterMark) return;
 
       // if (
       //   (lastDoneToolCall.toolCall == PrismaEnums.ToolCall.DELETE_FILE ||
@@ -54,7 +100,7 @@ export const backupCron = () => {
       // ) {
       await gcpStoreHandler.putDataInBucket(
         uploadData,
-        `${projectId}/${lastDoneToolCall.id}.zip`,
+        `${databaseProjectId}/${snapshotHighWaterMark.id}.zip`,
       );
 
       await prisma.conversationHistory.update({

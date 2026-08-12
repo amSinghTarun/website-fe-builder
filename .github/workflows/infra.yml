@@ -8,12 +8,13 @@ name: Deploy
 run-name: Deploy Kubernetes manifests
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: [service]
+    types: [completed]
+    branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 permissions:
@@ -22,10 +23,13 @@ permissions:
 
 jobs:
   job_1:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
 
-      - uses: 'actions/checkout@v4'
+      - uses: 'actions/checkout@v7'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -44,7 +48,7 @@ jobs:
           
       # get kubernetes creds so that kubectl work
       - name: Get GKE Credentials
-        uses: 'google-github-actions/get-gke-credentials@v2'
+        uses: 'google-github-actions/get-gke-credentials@v3'
         with:
           cluster_name: 'hundred-x-course'
           location: 'asia-southeast1'
@@ -55,6 +59,7 @@ jobs:
         run: |
           kubectl create secret generic sky-secrets --namespace=default \
             --from-literal=DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            --from-literal=JWT_SECRET="${{ secrets.JWT_SECRET }}" \
             --from-literal=GCP_PROJECT_ID="${{ secrets.GCP_PROJECT_ID }}" \
             --from-literal=POSTGRES_USER="${{ secrets.POSTGRES_USER }}" \
             --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
@@ -64,13 +69,34 @@ jobs:
         # deploy the docker images to k8s
       - name: Deploy apps
         run: |
+          kubectl apply -f ./infra/app-runtime-monitor-rbac.yml
+          kubectl apply -f ./infra/backend-rbac.yml
           kubectl apply -f ./infra/pvc.yml
           kubectl apply -f ./infra/postgres.yml
-          kubectl apply -f ./infra/ingress.yml
           kubectl apply -f ./infra/dynamic_nginx/deployment.yml
-        # kubectl apply -f ./infra/apps/backend
-        # kubectl apply -f ./infra/apps/frontend
+          kubectl apply -f ./infra/apps/backend.yml
+          kubectl apply -f ./infra/apps/frontend.yml
+          kubectl apply -f ./infra/ingress.yml
+
+      - name: Pin application images to this commit
+        run: |
+          kubectl set image deployment/sky-backend backend=tarunsingh28/sky-backend:${{ github.event.workflow_run.head_sha }}
+          kubectl set image deployment/sky-frontend frontend=tarunsingh28/sky-frontend:${{ github.event.workflow_run.head_sha }}
+
+      - name: Refresh existing project services
+        run: |
+          for deployment in $(kubectl get deployment -o name); do
+            case "$deployment" in
+              *-agent-deployment|*-recovery|*-recovery-cron-deployment|*-ws-server-deployment)
+                kubectl rollout restart "$deployment"
+                ;;
+            esac
+          done
 
       - name: Wait for Postgres
         run: |
           kubectl rollout status deployment/sky-postgres
+          kubectl rollout status deployment/nginx-proxy
+          kubectl rollout status deployment/dynamic-nginx
+          kubectl rollout status deployment/sky-backend
+          kubectl rollout status deployment/sky-frontend

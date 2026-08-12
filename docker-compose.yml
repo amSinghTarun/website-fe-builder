@@ -41,7 +41,7 @@ services:
       dockerfile: ./services/recovery_cron/Dockerfile
     environment: 
       DATABASE_URL : "postgresql://admin:secret123@postgres:5432/mydb"
-      PROJECT_ID: "database-project-id-of-user"
+      DATABASE_PROJECT_ID: "database-project-id-of-user"
       GOOGLE_APPLICATION_CREDENTIALS: "/app/gcp-creds.json"
     volumes:
       - "${HOME}/.config/gcloud/application_default_credentials.json:/app/gcp-creds.json:ro"
@@ -60,6 +60,8 @@ services:
     environment:
       GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-creds.json
       DATABASE_URL : "postgresql://admin:secret123@postgres:5432/mydb"
+      DATABASE_PROJECT_ID: "database-project-id-of-user"
+      APP_RUNTIME_MONITOR_ENABLED: "false"
       GCP_PROJECT_ID: "project-b955da7b-8f9e-4324-af2"
     restart: always
     ports:

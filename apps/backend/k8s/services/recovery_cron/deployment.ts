@@ -1,61 +1,72 @@
-export const recoveryDeploymentSpec = (projectId: string) => ({
-  apiVersion: `apps/v1`,
-  kind: `Deployment`,
-  metadata: {
-    name: `${projectId}-recovery-cron-deployment`,
-    labels: {
-      app: `${projectId}-recovery-cron`,
-    },
-  },
-  spec: {
-    replica: 1,
-    // based on this selector, this deployment will find and combine any other pod/replica running with same metadata
-    selector: {
-      matchLabels: {
-        app: `${projectId}-recovery-cron`,
+import { toRuntimeId } from "@sky/runtime-id";
+
+export const recoveryDeploymentSpec = (databaseProjectId: string) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
+  return {
+    apiVersion: `apps/v1`,
+    kind: `Deployment`,
+    metadata: {
+      name: `${runtimeId}-recovery`,
+      labels: {
+        app: `${runtimeId}-recovery-cron`,
+        "sky.dev/component": "recovery",
       },
     },
-    template: {
-      metadata: {
-        labels: {
-          app: `${projectId}-recovery-cron`,
+    spec: {
+      replicas: 1,
+      // based on this selector, this deployment will find and combine any other pod/replica running with same metadata
+      selector: {
+        matchLabels: {
+          app: `${runtimeId}-recovery-cron`,
         },
       },
-      spec: {
-        serviceAccountName: "k8s-service-account",
-        containers: [
-          {
-            name: `${projectId}-recovery-cron`,
-            image: `tarunsingh28/sky-recovery-cron`,
-            env: [
-              { name: "PROJECT_ID", value: projectId },
-              {
-                name: "DATABASE_URL",
-                valueFrom: {
-                  secretKeyRef: {
-                    name: "sky-secrets",
-                    key: "DATABASE_URL",
+      template: {
+        metadata: {
+          labels: {
+            app: `${runtimeId}-recovery-cron`,
+          },
+        },
+        spec: {
+          serviceAccountName: "k8s-service-account",
+          containers: [
+            {
+              name: `${runtimeId}-recovery-cron`,
+              image: `tarunsingh28/sky-recovery-cron`,
+              imagePullPolicy: "Always",
+              env: [
+                { name: "DATABASE_PROJECT_ID", value: databaseProjectId },
+                { name: "APP_NAMESPACE", value: "default" },
+                { name: "WORKSPACE_PATH", value: "/user-app/my-app" },
+                { name: "AGENT_PORT", value: "3000" },
+                {
+                  name: "DATABASE_URL",
+                  valueFrom: {
+                    secretKeyRef: {
+                      name: "sky-secrets",
+                      key: "DATABASE_URL",
+                    },
                   },
                 },
-              },
-            ],
-            volumeMounts: [
-              {
-                name: `${projectId}-volume`,
-                mountPath: "/user-app",
-              },
-            ],
-          },
-        ],
-        volumes: [
-          {
-            name: `${projectId}-volume`,
-            persistentVolumeClaim: {
-              claimName: `${projectId}-pvc`,
+              ],
+              volumeMounts: [
+                {
+                  name: `${runtimeId}-volume`,
+                  mountPath: "/user-app",
+                },
+              ],
             },
-          },
-        ],
+          ],
+          volumes: [
+            {
+              name: `${runtimeId}-volume`,
+              persistentVolumeClaim: {
+                claimName: `${runtimeId}-pvc`,
+              },
+            },
+          ],
+        },
       },
     },
-  },
-});
+  };
+};

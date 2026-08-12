@@ -16,7 +16,7 @@ import { recovery } from "./service";
     There should be an API which accept a tool calls and just loop through them.
     http://<target-service-name>.default.svc.cluster.local:<port>/<api-path>
 */
-recovery();
+await recovery();
 
 // CRON
 // -----------------------------

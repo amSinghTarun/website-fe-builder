@@ -1,4 +1,8 @@
-FROM oven/bun:1-alpine
+FROM oven/bun:1
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -9,17 +13,13 @@ COPY ./package.json ./
 
 COPY --parents ./services/agentServer/package.json ./
 COPY --parents ./packages/db/package.json ./packages/db/bun.lock ./
-
-WORKDIR /app/services/agentServer
-
-RUN bun add @fastify/swagger
-
-WORKDIR /app
+COPY --parents ./packages/runtime-id/package.json ./
 
 RUN bun install
 
 COPY ./services/agentServer ./services/agentServer
 COPY ./packages/db ./packages/db
+COPY ./packages/runtime-id ./packages/runtime-id
 
 WORKDIR /app/packages/db
 

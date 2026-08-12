@@ -1,9 +1,13 @@
-export const getPvcSpec = (projectId: string) => {
+import { toRuntimeId } from "@sky/runtime-id";
+
+export const getPvcSpec = (databaseProjectId: string) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
   return {
     apiVersion: "v1",
     kind: "PersistentVolumeClaim",
     metadata: {
-      name: `${projectId}-pvc`,
+      name: `${runtimeId}-pvc`,
     },
     spec: {
       accessModes: ["ReadWriteOnce"],

@@ -8,13 +8,22 @@ import {
 } from "@google/genai";
 import { tools, mergeWorktree } from "../tools";
 import "dotenv/config";
-import { rejectSubAgent, resolveSubAgent, subAgents } from "../helper";
+import {
+  getOutstandingSubAgentIds,
+  rejectSubAgent,
+  resolveSubAgent,
+} from "../helper";
 import path from "node:path";
 import os from "node:os";
 import fs, { writeFileSync } from "node:fs";
 import { summariseAgentPrompt, defaultSystemPrompt } from "../systemPrompts";
-import { randomUUID } from "node:crypto";
 import { prisma } from "@sky/db";
+import { normalizeToolResult } from "../types/tools";
+import {
+  formatRuntimeObservation,
+  getConfiguredAppRuntimeMonitor,
+  type AppRuntimeState,
+} from "../runtime";
 
 export class GeminiProvider {
   private static sessions: {
@@ -29,12 +38,19 @@ export class GeminiProvider {
   });
 
   private projectId: string = "";
+  private sessionKey: string;
 
-  public constructor(projectId: string, systemPrompt?: string, cwd?: string) {
+  public constructor(
+    projectId: string,
+    systemPrompt?: string,
+    cwd?: string,
+    sessionKey?: string,
+  ) {
     this.projectId = projectId;
+    this.sessionKey = sessionKey ?? projectId;
     this.cwd = cwd ?? "";
-    if (!GeminiProvider.sessions[this.projectId])
-      GeminiProvider.sessions[this.projectId] = {
+    if (!GeminiProvider.sessions[this.sessionKey])
+      GeminiProvider.sessions[this.sessionKey] = {
         chat: this.createNewSession({ newSystemPrompt: systemPrompt }),
         contextualiseCount: 0,
       };
@@ -67,20 +83,23 @@ export class GeminiProvider {
   }
 
   private static async summariseChat(history: Content[]): Promise<string> {
-    // initialise a new chat agent with summarise system prompt
-    let summariseAgent = new GeminiProvider(randomUUID(), summariseAgentPrompt);
-    let { summary } = await summariseAgent.agentLoop({
-      id: randomUUID(),
-      message: JSON.stringify(history),
-      handler: {},
+    const summariseAgent = GeminiProvider.geminiClient.chats.create({
+      model: "gemini-2.5-flash",
+      config: {
+        systemInstruction: summariseAgentPrompt,
+      },
     });
-    console.log("New Summary : ", summary);
+    const response = await summariseAgent.sendMessage({
+      message: JSON.stringify(history),
+    });
+    const summary = response.text ?? "Unable to summarize previous context.";
     return summary;
   }
 
   private static async contextualiseChat(
     history: Content[],
-    projectId: string,
+    sessionKey: string,
+    databaseProjectId: string,
   ): Promise<{ contextedCount: number; history: Content[] }> {
     for (let content of history) {
       if (content.role == "user" || !content.parts) continue;
@@ -100,7 +119,7 @@ export class GeminiProvider {
             let filePath = path.join(
               os.homedir(),
               ".loveable-contest",
-              projectId,
+              databaseProjectId,
             );
             let fileName = `${Date.now()}_${counter++}.md`;
             let dirExist = fs.existsSync(filePath);
@@ -116,9 +135,23 @@ export class GeminiProvider {
     }
 
     let contextedCount =
-      GeminiProvider.sessions[projectId]?.contextualiseCount ?? 0;
+      GeminiProvider.sessions[sessionKey]?.contextualiseCount ?? 0;
 
     return { contextedCount, history };
+  }
+
+  private async observeRuntime(handler: {
+    onChunk?: (chunk: { type: string; response: any; uuid?: string }) => void;
+  }): Promise<AppRuntimeState | undefined> {
+    const configured = getConfiguredAppRuntimeMonitor();
+
+    if (!configured || configured.ref.databaseProjectId !== this.projectId) {
+      return undefined;
+    }
+
+    const state = await configured.monitor.waitForSettledState(configured.ref);
+    handler.onChunk?.({ type: "runtime", response: state });
+    return state;
   }
 
   private async agentLoop(args: {
@@ -149,7 +182,6 @@ export class GeminiProvider {
           type: "TEXT_MESSAGE",
           output: summary,
           agentId: args.id,
-          cwd: this.cwd,
         },
         select: {
           id: true,
@@ -158,6 +190,43 @@ export class GeminiProvider {
 
       let activeTaskPlan: string[] | null = null;
       let completedTaskIds = new Set<string>();
+      let runtimeTouched = false;
+      const repairAttemptsByFingerprint = new Map<string, number>();
+
+      const runtimeRepairMessage = (
+        runtimeState: AppRuntimeState | undefined,
+        countAttempt: boolean,
+      ): string | undefined => {
+        if (!runtimeState) return undefined;
+
+        if (runtimeState.status === "running") {
+          repairAttemptsByFingerprint.clear();
+          return undefined;
+        }
+
+        if (!runtimeState.repairableByAgent) return undefined;
+
+        const fingerprint = runtimeState.fingerprint ?? "unknown";
+        const previousAttempts =
+          repairAttemptsByFingerprint.get(fingerprint) ?? 0;
+        const attempts = countAttempt
+          ? previousAttempts + 1
+          : previousAttempts;
+        repairAttemptsByFingerprint.set(fingerprint, attempts);
+
+        if (attempts <= 3) {
+          return `${formatRuntimeObservation(runtimeState)}\n\nThe task cannot complete until this repairable application failure is resolved. Continue working.`;
+        }
+
+        const blockedMessage =
+          "The generated application remains unhealthy after three automatic repair attempts.";
+        summary += ` ${blockedMessage}`;
+        args.handler.onChunk?.({
+          type: "runtimeBlocked",
+          response: runtimeState,
+        });
+        return undefined;
+      };
 
       while (hasToolCall) {
         let streamResponse;
@@ -165,7 +234,7 @@ export class GeminiProvider {
           console.log("\n\n\n------------------------------------");
 
           let currentHistory =
-            GeminiProvider.sessions[this.projectId]!.chat.getHistory();
+            GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
           if (currentHistory.length) {
             let sessionTokens =
               await GeminiProvider.geminiClient.models.countTokens({
@@ -178,10 +247,11 @@ export class GeminiProvider {
               let inLoopContextualiseChat =
                 await GeminiProvider.contextualiseChat(
                   currentHistory,
+                  this.sessionKey,
                   this.projectId,
                 );
 
-              GeminiProvider.sessions[this.projectId] = {
+              GeminiProvider.sessions[this.sessionKey] = {
                 chat: this.createNewSession({
                   history: inLoopContextualiseChat.history,
                 }),
@@ -200,7 +270,7 @@ export class GeminiProvider {
 
           streamResponse =
             await GeminiProvider.sessions[
-              this.projectId
+              this.sessionKey
             ]!.chat.sendMessageStream(messageForStream);
         } catch (error: any) {
           console.log(args.id, " - ", error);
@@ -220,7 +290,11 @@ export class GeminiProvider {
           if (response.functionCalls && response.functionCalls.length > 0) {
             let functionCallResponses: PartListUnion = [];
 
-            let subAgentToolCalls = [];
+            let subAgentToolCalls: Array<{
+              id: string;
+              run: Promise<any>;
+            }> = [];
+            let runtimeDirtyThisBatch = false;
 
             for (let functionCall of response.functionCalls) {
               // console.log("FUNCTION NAME : ", functionCall.name);
@@ -247,25 +321,21 @@ export class GeminiProvider {
                   context: { cwd: this.cwd },
                 };
 
-                const output = (await tool.executable(
-                  toolArgs.args,
-                  toolArgs.context,
-                )) as {
-                  response: string;
-                  yield?: {
-                    type: string;
-                    response: any;
-                    resolver?: any;
-                    uuid?: string;
-                  };
-                };
+                const output = normalizeToolResult(
+                  await tool.executable(toolArgs.args, toolArgs.context),
+                );
+
+                if (output.effects?.runtimeMayChange) {
+                  runtimeDirtyThisBatch = true;
+                  runtimeTouched = true;
+                }
 
                 // Prisma Call Here for the calls of LLM
                 await prisma.conversationHistory.create({
                   data: {
                     contents: JSON.stringify(toolArgs),
                     from: "ASSISTANT",
-                    toolCall: tool.identifier.toString(),
+                    toolCall: tool.declaration.name,
                     projectId: this.projectId,
                     type: "TOOL_CALL",
                     output: JSON.stringify({
@@ -283,19 +353,20 @@ export class GeminiProvider {
                     yield?: { type: string; response: any };
                   };
                   if (provisionOutput.workspacePath) {
-                    let newProjectId = `${this.projectId} + ${functionCall.args?.id}`;
                     let subAgentSession = new GeminiProvider(
-                      newProjectId,
+                      this.projectId,
                       functionCall.args?.systemPrompt as string,
                       provisionOutput.workspacePath,
+                      `${this.sessionKey}:agent:${functionCall.args?.id}`,
                     );
-                    subAgentToolCalls.push(
-                      subAgentSession.agentLoop({
+                    subAgentToolCalls.push({
+                      id: functionCall.args?.id as string,
+                      run: subAgentSession.agentLoop({
                         id: functionCall.args?.id as string,
                         message: functionCall.args?.prompt as string,
                         handler: { onChunk: args.handler.onChunk },
                       }),
-                    );
+                    });
                   }
                 } else if (tool.declaration.name === "createTaskPlan") {
                   activeTaskPlan =
@@ -347,10 +418,9 @@ export class GeminiProvider {
               hasToolCall = true;
             }
 
-            subAgentToolCalls.length &&
-              Promise.all(subAgentToolCalls).then((responses) => {
-                // loop through responses and merge the sub-agent into main and call rejectSubAgent, resolveSubAgent
-                responses.map((response) => {
+            subAgentToolCalls.forEach(({ id, run }) => {
+              void run
+                .then((response) => {
                   mergeWorktree({
                     id: response.id,
                     targetBranch: "main",
@@ -381,8 +451,20 @@ export class GeminiProvider {
                     .catch((error: any) => {
                       rejectSubAgent(response.id, error);
                     });
+                })
+                .catch((error: any) => {
+                  rejectSubAgent(id, error);
                 });
-              });
+            });
+
+            if (args.id === "1" && runtimeDirtyThisBatch) {
+              const runtimeState = await this.observeRuntime(args.handler);
+              const repairMessage = runtimeRepairMessage(runtimeState, true);
+
+              if (repairMessage) {
+                functionCallResponses.push({ text: repairMessage });
+              }
+            }
 
             newMessage = functionCallResponses;
           }
@@ -410,18 +492,27 @@ export class GeminiProvider {
             },
           ];
           hasToolCall = true;
-        } else if (Object.keys(subAgents).length > 0) {
+        } else if (getOutstandingSubAgentIds().length > 0) {
+          const outstandingSubAgents = getOutstandingSubAgentIds();
           newMessage = [
             ...newMessage,
             {
-              text: `You still have ${Object.keys(subAgents).length} unfinished agents(s). Continue working on them, or call waitForSubAgent / explain why they can't be completed.`,
+              text: `You still have ${outstandingSubAgents.length} unfinished agent(s): ${outstandingSubAgents.join(", ")}. Call waitForSubAgent for each one before completing.`,
             },
           ];
           hasToolCall = true;
+        } else if (!hasToolCall && args.id === "1" && runtimeTouched) {
+          const runtimeState = await this.observeRuntime(args.handler);
+
+          const repairMessage = runtimeRepairMessage(runtimeState, false);
+          if (repairMessage) {
+            newMessage = [{ text: repairMessage }];
+            hasToolCall = true;
+          }
         }
       }
 
-      let history = GeminiProvider.sessions[this.projectId]!.chat.getHistory();
+      let history = GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
 
       let sessionTokens = await GeminiProvider.geminiClient.models.countTokens({
         model: "gemini-2.5-flash",
@@ -440,18 +531,22 @@ export class GeminiProvider {
 
       if ((sessionTokens?.totalTokens ?? 0) > 1000) {
         let { contextedCount, history: newHistory } =
-          await GeminiProvider.contextualiseChat(history, this.projectId);
+          await GeminiProvider.contextualiseChat(
+            history,
+            this.sessionKey,
+            this.projectId,
+          );
         if (contextedCount >= 3) {
           let sessionSummary = await GeminiProvider.summariseChat(history);
 
-          GeminiProvider.sessions[this.projectId] = {
+          GeminiProvider.sessions[this.sessionKey] = {
             chat: this.createNewSession({
               newSystemPrompt: sessionSummary,
             }),
             contextualiseCount: 0,
           };
         } else {
-          GeminiProvider.sessions[this.projectId] = {
+          GeminiProvider.sessions[this.sessionKey] = {
             chat: this.createNewSession({
               history: newHistory,
             }),
@@ -523,14 +618,14 @@ export class GeminiProvider {
         controller.close();
       };
 
-      this.agentLoop({
+      void this.agentLoop({
         message: args.message,
         id: args.id,
         handler: {
           onChunk: onChunk,
           onFinish: onFinish,
         },
-      });
+      }).catch((error) => controller.error(error));
 
       let reader = stream.getReader();
       while (true) {

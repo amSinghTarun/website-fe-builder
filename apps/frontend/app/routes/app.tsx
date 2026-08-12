@@ -1,4 +1,3 @@
-import type { Route } from "./+types/route-name";
 import { App } from "../components/App";
 import { ProtectedRoute } from "./ProtectedRoute";
 

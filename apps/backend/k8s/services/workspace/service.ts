@@ -1,19 +1,25 @@
-export const workspaceServiceSpec = (projectId: string) => ({
-  apiVersion: "v1",
-  kind: "Service",
-  metadata: {
-    name: `${projectId}-workspace-service`,
-  },
-  spec: {
-    type: "ClusterIP",
-    selector: {
-      app: `${projectId}-workspace`,
+import { toRuntimeId } from "@sky/runtime-id";
+
+export const workspaceServiceSpec = (databaseProjectId: string) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
+  return {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      name: `${runtimeId}-workspace-service`,
     },
-    ports: [
-      {
-        port: 3000,
-        targetPort: 8080,
+    spec: {
+      type: "ClusterIP",
+      selector: {
+        app: `${runtimeId}-workspace`,
       },
-    ],
-  },
-});
+      ports: [
+        {
+          port: 5173,
+          targetPort: 5173,
+        },
+      ],
+    },
+  };
+};

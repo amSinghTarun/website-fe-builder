@@ -1,23 +1,10 @@
-# # this will be a github action and secret
-# apiVersion: v1
-# kind: Secret
-# metadata: 
-#   name: backend-secrets
-#   namespace: default
-# type: Opaque
-# data:
-#   # admin
-#   DATABASE_URL: <DATABASE_URL>
-#   # secret123
-#   GCP_PROJECT_ID: <GCP_PROJECT_ID>
-
----
-
 apiVersion: apps/v1
 kind: Deployment
-serviceAccount: agent-k8s-sa
 metadata:
   name: sky-backend
+  namespace: default
+  labels:
+    app: sky-backend
 spec:
   replicas: 1
   selector:
@@ -28,41 +15,57 @@ spec:
       labels:
         app: sky-backend
     spec:
+      serviceAccountName: sky-backend-sa
       containers:
         - name: backend
-          image: HERE COMES THE DOCKERHUB IMAGE BACKEND
-          ports:  
-            - containerPort: 3000
-          env: 
+          image: tarunsingh28/sky-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+          env:
             - name: DATABASE_URL
-              valueFrom: 
-                secretKeyRef: 
+              valueFrom:
+                secretKeyRef:
                   name: sky-secrets
                   key: DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sky-secrets
+                  key: JWT_SECRET
             - name: GCP_PROJECT_ID
-              valueFrom: 
-                secretKeyRef: 
+              valueFrom:
+                secretKeyRef:
                   name: sky-secrets
                   key: GCP_PROJECT_ID
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgres/data
-              subPath: postgres
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: sky-pvc
-
+            - name: PROJECTS_BASE_URL
+              value: http://project.tarunn.co
+            - name: CORS_ORIGINS
+              value: http://sky.tarunn.co,https://sky.tarunn.co
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
 ---
-
 apiVersion: v1
 kind: Service
 metadata:
   name: backend-service
-spec: 
-  kind: ClusterIP
+  namespace: default
+spec:
+  type: ClusterIP
   selector:
     app: sky-backend
   ports:
-    - port: 3000
-      targetPort: 3000
+    - name: http
+      port: 3001
+      targetPort: 3001

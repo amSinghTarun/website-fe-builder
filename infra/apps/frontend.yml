@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sky-frontend
+  namespace: default
+  labels:
+    app: sky-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sky-frontend
+  template:
+    metadata:
+      labels:
+        app: sky-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: tarunsingh28/sky-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: sky-frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

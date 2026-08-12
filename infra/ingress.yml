@@ -3,57 +3,63 @@ kind: ConfigMap
 metadata:
   name: nginx-proxy-conf
   namespace: default
-data: 
+data:
   default.conf: |
-    # Frontend
     server {
       listen 80;
-      server_name  sky.tarunn.co;
+      server_name sky.tarunn.co;
 
-      location / {
-        proxy_pass <PASS TO FRONTEND>;
+      location /api/ {
+        proxy_buffering off;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
+        proxy_pass http://backend-service.default.svc.cluster.local:3001/;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+      }
 
+      location / {
+        proxy_pass http://frontend-service.default.svc.cluster.local:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
       }
     }
 
     server {
       listen 80;
-      server_name  api.tarunn.co;
+      server_name api.tarunn.co;
 
       location / {
-        proxy_pass <PASS TO BACKEND>;
+        proxy_pass http://backend-service.default.svc.cluster.local:3001;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-
       }
     }
 
-    # Custom Nginx server
     server {
-      listen 80 ;
+      listen 80;
       server_name project.tarunn.co;
 
       location / {
-        proxy_pass <PASS TO DYNAMIC NGINX>;
+        proxy_pass http://nginx-custom.default.svc.cluster.local:8080;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
       }
     }
-
 ---
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx-proxy
+  namespace: default
 spec:
   replicas: 1
   selector:
@@ -66,7 +72,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: nginx:lts-alpine
+          image: nginx:alpine
           ports:
             - containerPort: 80
           volumeMounts:
@@ -76,9 +82,7 @@ spec:
         - name: nginx-conf
           configMap:
             name: nginx-proxy-conf
-
 ---
-
 apiVersion: v1
 kind: Service
 metadata:

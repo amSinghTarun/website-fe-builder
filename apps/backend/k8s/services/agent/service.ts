@@ -1,19 +1,25 @@
-export const agentServiceSpec = (projectId: string) => ({
-  apiVersion: "v1",
-  kind: "Service",
-  metadata: {
-    name: `${projectId}-agent-service`,
-  },
-  spec: {
-    type: "ClusterIP",
-    selector: {
-      app: `${projectId}-agent`,
+import { toRuntimeId } from "@sky/runtime-id";
+
+export const agentServiceSpec = (databaseProjectId: string) => {
+  const runtimeId = toRuntimeId(databaseProjectId);
+
+  return {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      name: `${runtimeId}-agent-service`,
     },
-    ports: [
-      {
-        port: 3001,
-        targetPort: 3001,
+    spec: {
+      type: "ClusterIP",
+      selector: {
+        app: `${runtimeId}-agent`,
       },
-    ],
-  },
-});
+      ports: [
+        {
+          port: 3000,
+          targetPort: 3000,
+        },
+      ],
+    },
+  };
+};
