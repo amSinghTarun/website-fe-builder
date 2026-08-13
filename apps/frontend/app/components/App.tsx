@@ -1,10 +1,24 @@
-import { Sparkles, Loader2, Eye, Code2 } from "lucide-react";
+import {
+  Sparkles,
+  Loader2,
+  Eye,
+  Code2,
+  CheckCircle2,
+  Circle,
+  AlertCircle,
+} from "lucide-react";
 import { useAuthStore } from "../store/authStore";
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { apiUrl } from "../config";
 import { createClientId } from "../functions/clientId";
+import {
+  emptyAgentActivity,
+  reduceAgentActivity,
+  type AgentActivityState,
+  type AgentStreamEvent,
+} from "../functions/agentActivity";
 
 type ConversationType = string; // narrow this to your actual enum if exported
 type MessageFrom = "USER" | "ASSISTANT";
@@ -51,6 +65,8 @@ export function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [agentActivity, setAgentActivity] =
+    useState<AgentActivityState>(emptyAgentActivity);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -184,6 +200,7 @@ export function App() {
 
     const assistantId = createClientId();
     let assistantStarted = false;
+    let streamError: string | null = null;
     let buffer = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -196,10 +213,7 @@ export function App() {
         .join("\n");
       if (!data) return;
 
-      const chunk = JSON.parse(data) as {
-        type: string;
-        response?: unknown;
-      };
+      const chunk = JSON.parse(data) as AgentStreamEvent;
 
       if (chunk.type === "message" && typeof chunk.response === "string") {
         if (!assistantStarted) {
@@ -222,6 +236,17 @@ export function App() {
       if (chunk.type === "runtimeBlocked") {
         toast.error("The generated app is still unhealthy after automatic repairs.");
       }
+
+      if (chunk.type !== "message") {
+        setAgentActivity((previous) => reduceAgentActivity(previous, chunk));
+      }
+
+      if (chunk.type === "error") {
+        streamError =
+          typeof chunk.response === "string"
+            ? chunk.response
+            : "The project agent encountered an error";
+      }
     };
 
     while (true) {
@@ -236,6 +261,7 @@ export function App() {
     }
 
     if (buffer.trim()) consumeEvent(buffer);
+    if (streamError) throw new Error(streamError);
     if (!assistantStarted) {
       setMessages((previous) => [
         ...previous,
@@ -264,6 +290,7 @@ export function App() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    setAgentActivity(emptyAgentActivity);
     setMessage("");
     setIsGenerating(true);
 
@@ -370,6 +397,39 @@ export function App() {
                     </div>
                   )
                 )}
+
+              {agentActivity.items.length > 0 && (
+                <div className="w-full rounded-lg border border-zinc-800 bg-zinc-950/80 p-3">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                    Build activity
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {agentActivity.items.map((item) => (
+                      <div
+                        key={item.id}
+                        className={`flex items-start gap-2 text-xs ${
+                          item.status === "error"
+                            ? "text-red-400"
+                            : item.status === "complete"
+                              ? "text-emerald-400"
+                              : "text-zinc-400"
+                        }`}
+                      >
+                        {item.status === "error" ? (
+                          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+                        ) : item.status === "complete" ? (
+                          <CheckCircle2 size={13} className="mt-0.5 shrink-0" />
+                        ) : isGenerating ? (
+                          <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin" />
+                        ) : (
+                          <Circle size={13} className="mt-0.5 shrink-0" />
+                        )}
+                        <span className="leading-4">{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {isGenerating && (
                 <div className="w-full flex justify-start">

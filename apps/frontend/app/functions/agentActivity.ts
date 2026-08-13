@@ -1,0 +1,206 @@
+export type AgentStreamEvent = {
+  type: string;
+  response?: unknown;
+  uuid?: string;
+};
+
+export type AgentActivityStatus = "active" | "complete" | "error";
+
+export type AgentActivityItem = {
+  id: string;
+  label: string;
+  status: AgentActivityStatus;
+};
+
+export type AgentActivityState = {
+  items: AgentActivityItem[];
+  sequence: number;
+};
+
+export const emptyAgentActivity: AgentActivityState = {
+  items: [],
+  sequence: 0,
+};
+
+function responseText(response: unknown): string {
+  if (typeof response === "string") return response;
+  if (response == null) return "";
+
+  try {
+    return JSON.stringify(response);
+  } catch {
+    return String(response);
+  }
+}
+
+function planItems(response: unknown): Array<{ id: string; task: string }> {
+  const entries = Array.isArray(response) ? response : [response];
+
+  return entries.flatMap((entry, index) => {
+    if (typeof entry === "string") {
+      return [{ id: String(index + 1), task: entry }];
+    }
+
+    if (!entry || typeof entry !== "object") return [];
+
+    const item = entry as Record<string, unknown>;
+    const id = responseText(item.id) || String(index + 1);
+    const task = responseText(item.task ?? item.title ?? item.description);
+    return task ? [{ id, task }] : [];
+  });
+}
+
+function runtimeLabel(response: unknown): {
+  label: string;
+  status: AgentActivityStatus;
+} {
+  const runtime =
+    response && typeof response === "object"
+      ? (response as Record<string, unknown>)
+      : {};
+  const status = responseText(runtime.status) || "unknown";
+  const reason = responseText(runtime.reason);
+
+  switch (status) {
+    case "running":
+      return { label: "Preview is running", status: "complete" };
+    case "provisioning":
+      return { label: "Provisioning the preview runtime", status: "active" };
+    case "starting":
+      return { label: reason || "Starting the preview runtime", status: "active" };
+    case "unhealthy":
+    case "crashed":
+      return {
+        label: reason
+          ? `Preview check failed: ${reason}. Attempting a repair`
+          : "Preview check failed. Attempting a repair",
+        status: "active",
+      };
+    default:
+      return {
+        label: reason || `Preview runtime status: ${status}`,
+        status: "active",
+      };
+  }
+}
+
+function upsert(
+  items: AgentActivityItem[],
+  next: AgentActivityItem,
+): AgentActivityItem[] {
+  const index = items.findIndex((item) => item.id === next.id);
+  if (index === -1) return [...items, next];
+
+  return items.map((item, itemIndex) => (itemIndex === index ? next : item));
+}
+
+export function reduceAgentActivity(
+  state: AgentActivityState,
+  event: AgentStreamEvent,
+): AgentActivityState {
+  if (event.type === "message") return state;
+
+  if (event.type === "plan") {
+    const steps = planItems(event.response).map((step) => ({
+      id: `plan-${step.id}`,
+      label: step.task,
+      status: "active" as const,
+    }));
+
+    return {
+      ...state,
+      items: [
+        ...state.items.filter((item) => !item.id.startsWith("plan-")),
+        ...steps,
+      ],
+    };
+  }
+
+  if (event.type === "planComplete") {
+    const id = `plan-${responseText(event.response)}`;
+    return {
+      ...state,
+      items: state.items.map((item) =>
+        item.id === id ? { ...item, status: "complete" } : item,
+      ),
+    };
+  }
+
+  if (event.type === "runtime") {
+    return {
+      ...state,
+      items: upsert(state.items, { id: "runtime", ...runtimeLabel(event.response) }),
+    };
+  }
+
+  if (event.type === "runtimeBlocked") {
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: "runtime",
+        label: "Preview remains unhealthy after automatic repair attempts",
+        status: "error",
+      }),
+    };
+  }
+
+  if (event.type === "error") {
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: "agent-error",
+        label: responseText(event.response) || "The agent encountered an error",
+        status: "error",
+      }),
+    };
+  }
+
+  if (event.type === "Created a sub agent") {
+    const id = responseText(event.response);
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: `sub-agent-${id}`,
+        label: `Started sub-agent ${id}`,
+        status: "active",
+      }),
+    };
+  }
+
+  if (event.type === "waitingForAgent") {
+    const id = responseText(event.response);
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: `sub-agent-${id}`,
+        label: `Sub-agent ${id} finished`,
+        status: "complete",
+      }),
+    };
+  }
+
+  if (event.type === "askInput") {
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: `question-${event.uuid ?? "current"}`,
+        label: `Agent needs input: ${responseText(event.response)}`,
+        status: "active",
+      }),
+    };
+  }
+
+  const nextSequence = state.sequence + 1;
+  const label = responseText(event.response);
+  return {
+    sequence: nextSequence,
+    items: [
+      ...state.items,
+      {
+        id: `event-${nextSequence}`,
+        label: label ? `${event.type}: ${label}` : event.type,
+        status: "active",
+      },
+    ],
+  };
+}
