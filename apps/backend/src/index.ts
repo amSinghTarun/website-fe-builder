@@ -14,6 +14,8 @@ import {
   createJwt,
   verifyHashedPassword,
   spinupK8sResources,
+  getProjectRuntimeStatus,
+  projectRuntimeRoutes,
 } from "./helpers";
 import { checkAuth } from "./middleware";
 import "dotenv/config";
@@ -24,21 +26,6 @@ import { toRuntimeId } from "@sky/runtime-id";
 import { Readable } from "node:stream";
 
 const PORT = 3001;
-const projectsBaseUrl = (
-  process.env.PROJECTS_BASE_URL?.trim() || "http://project.tarun.co"
-).replace(/\/+$/, "");
-
-function projectRuntimeRoutes(databaseProjectId: string) {
-  const runtimeId = toRuntimeId(databaseProjectId);
-  const workspacePath = `/workspace/${runtimeId}/`;
-
-  return {
-    runtimeId,
-    agentPath: `/agent/${runtimeId}`,
-    workspacePath,
-    workspaceUrl: `${projectsBaseUrl}${workspacePath}`,
-  };
-}
 
 async function openAgentStream(
   databaseProjectId: string,
@@ -480,6 +467,85 @@ app.post(
           ...projectRuntimeRoutes(projectId),
         },
       });
+  },
+);
+
+app.post(
+  "/resumeProject",
+  {
+    onRequest: checkAuth,
+    schema: {
+      body: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.body.projectId,
+        userId: request.userId,
+      },
+      select: {
+        id: true,
+        title: true,
+        library: true,
+        initialPrompt: true,
+      },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    const runtime = await spinupK8sResources(project.library, project.id);
+
+    return reply.code(202).send({
+      status: "success",
+      message: "Project runtime is starting",
+      data: {
+        ...project,
+        ...runtime,
+        ...projectRuntimeRoutes(project.id),
+      },
+    });
+  },
+);
+
+app.get(
+  "/runtimeStatus",
+  {
+    onRequest: checkAuth,
+    schema: {
+      querystring: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.query.projectId,
+        userId: request.userId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    return reply.code(200).send({
+      status: "success",
+      message: "Project runtime status",
+      data: await getProjectRuntimeStatus(project.id),
+    });
   },
 );
 

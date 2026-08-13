@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useAuthStore } from "../store/authStore";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { apiUrl } from "../config";
 import { createClientId } from "../functions/clientId";
@@ -51,10 +51,12 @@ const SUGGESTIONS = [
 
 export function App() {
   const user = useAuthStore((state) => state.user);
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   const projectId = searchParams.get("project");
   const nameFromUrl = searchParams.get("name");
+  const resumeRequested = searchParams.get("resume") === "1";
 
   const [resolvedName, setResolvedName] = useState<string | null>(nameFromUrl);
   const [loadingName, setLoadingName] = useState(false);
@@ -83,6 +85,9 @@ export function App() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [resumeStatus, setResumeStatus] = useState<
+    "idle" | "starting" | "ready" | "error"
+  >(resumeRequested ? "starting" : "idle");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const generationAbortRef = useRef<AbortController | null>(null);
@@ -152,9 +157,11 @@ export function App() {
         );
         if (!cancelled) {
           setResolvedName(match ? match.title : null);
-          setPreviewUrl(
-            match?.initialPrompt ? (match.workspaceUrl ?? null) : null,
-          );
+          if (!resumeRequested) {
+            setPreviewUrl(
+              match?.initialPrompt ? (match.workspaceUrl ?? null) : null,
+            );
+          }
         }
       } catch (err: unknown) {
         if (!cancelled) {
@@ -170,7 +177,82 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [nameFromUrl, projectId]);
+  }, [nameFromUrl, projectId, resumeRequested]);
+
+  useEffect(() => {
+    if (!projectId || !resumeRequested) {
+      setResumeStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    let nextPoll: ReturnType<typeof setTimeout> | null = null;
+
+    setResumeStatus("starting");
+    setPreviewUrl(null);
+    setProjectFiles([]);
+    setSelectedFilePath(null);
+    setFileError(null);
+
+    const pollRuntime = async () => {
+      attempts += 1;
+
+      try {
+        const response = await fetch(
+          apiUrl(`/runtimeStatus?projectId=${encodeURIComponent(projectId)}`),
+          { credentials: "include" },
+        );
+        const result = await response.json().catch(() => null);
+
+        if (response.status === 401 || response.status === 404) {
+          throw new Error(result?.message || "Project runtime is unavailable");
+        }
+
+        if (response.ok && result?.data?.status === "ready") {
+          if (cancelled) return;
+          setPreviewUrl(result.data.workspaceUrl ?? null);
+          setPreviewRevision((current) => current + 1);
+          setResumeStatus("ready");
+          void loadProjectFiles();
+          return;
+        }
+
+        if (attempts >= 60) {
+          throw new Error("The project runtime did not become ready in time");
+        }
+
+        if (!cancelled) nextPoll = setTimeout(() => void pollRuntime(), 2_000);
+      } catch (error) {
+        if (cancelled) return;
+
+        if (
+          attempts < 60 &&
+          !(
+            error instanceof Error &&
+            /not found|unavailable/i.test(error.message)
+          )
+        ) {
+          nextPoll = setTimeout(() => void pollRuntime(), 2_000);
+          return;
+        }
+
+        setResumeStatus("error");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Unable to restore project runtime",
+        );
+      }
+    };
+
+    void pollRuntime();
+
+    return () => {
+      cancelled = true;
+      if (nextPoll) clearTimeout(nextPoll);
+    };
+  }, [loadProjectFiles, projectId, resumeRequested]);
 
   // Load conversation history whenever a project is selected
   useEffect(() => {
@@ -558,10 +640,15 @@ export function App() {
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.03)_1px,transparent_1px)] bg-size-[48px_48px]" />
 
       <nav className="relative z-10 h-16 px-10 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => navigate("/")}
+          aria-label="Go to SKY home"
+          className="flex items-center gap-3 cursor-pointer"
+        >
           <Sparkles className="text-cyan-400" size={18} />
           <h1 className="font-black tracking-[0.25em] text-lg">SKY</h1>
-        </div>
+        </button>
         <div className="flex gap-3">
           {user && (
             <button className="px-4 py-1.5 text-sm border border-cyan-300 text-cyan-300 transition cursor-pointer">
@@ -823,7 +910,35 @@ export function App() {
             </div>
 
             <div className="flex min-h-0 flex-1 items-center justify-center">
-              {activeTab === "code" ? (
+              {resumeStatus === "starting" ? (
+                <div className="max-w-sm px-6 text-center">
+                  <Loader2
+                    className="mx-auto mb-3 animate-spin text-cyan-300"
+                    size={24}
+                  />
+                  <p className="text-sm text-zinc-300">Restoring your project</p>
+                  <p className="mt-1 text-xs leading-5 text-zinc-600">
+                    Recovering saved code and starting the preview and coding agent.
+                  </p>
+                </div>
+              ) : resumeStatus === "error" ? (
+                <div className="max-w-sm px-6 text-center">
+                  <AlertCircle
+                    className="mx-auto mb-3 text-red-400"
+                    size={24}
+                  />
+                  <p className="text-sm text-red-400">
+                    The project could not be restored.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/")}
+                    className="mt-3 text-xs text-cyan-300 hover:text-cyan-200"
+                  >
+                    Return home and try again
+                  </button>
+                </div>
+              ) : activeTab === "code" ? (
                 loadingFiles && projectFiles.length === 0 ? (
                   <div className="flex items-center gap-2 text-sm text-zinc-500">
                     <Loader2 size={14} className="animate-spin" /> Loading generated files...

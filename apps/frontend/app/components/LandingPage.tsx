@@ -10,7 +10,7 @@ import { apiUrl } from "../config";
 type Project = {
   id: string;
   title: string;
-  feLibrary: "react" | "vue";
+  library: "react" | "vue";
   createdAt: string;
   updatedAt: string;
 };
@@ -45,6 +45,9 @@ export function LandingPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [resumingProjectId, setResumingProjectId] = useState<string | null>(
+    null,
+  );
 
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [projectName, setProjectName] = useState("");
@@ -73,7 +76,6 @@ export function LandingPage() {
       }
 
       const json = await res.json();
-      console.log(json)
       setProjects(json.data ?? []);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -83,9 +85,34 @@ export function LandingPage() {
     }
   };
 
-  const resumeProject = (projectId: string) => {
-    setShowProjects(false);
-    navigate(`/app?project=${projectId}`);
+  const resumeProject = async (project: Project) => {
+    if (resumingProjectId) return;
+
+    setResumingProjectId(project.id);
+    try {
+      const response = await fetch(apiUrl("/resumeProject"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id }),
+      });
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.message || "Failed to resume project");
+      }
+
+      setShowProjects(false);
+      navigate(
+        `/app?project=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.title)}&resume=1`,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to resume project",
+      );
+    } finally {
+      setResumingProjectId(null);
+    }
   };
 
   const closeNewProjectModal = () => {
@@ -133,10 +160,15 @@ export function LandingPage() {
         <div className="absolute -top-32 -left-32 w-96 h-72 bg-radial-[at_50%_75%] from-sky-200 via-blue-400 to-indigo-900 to-90% blur-[180px] rounded-full" />
 
         <nav className="relative z-10 h-16 px-10 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => navigate("/")}
+            aria-label="Go to SKY home"
+            className="flex items-center gap-3 cursor-pointer"
+          >
             <Sparkles className="text-cyan-400" size={18} />
             <h1 className="font-black tracking-[0.25em] text-lg">SKY</h1>
-          </div>
+          </button>
           <div className="flex gap-3">
             {isAuthenticated ? (
               <button className="px-4 py-1.5 text-sm border border-cyan-300 text-cyan-300 transition cursor-pointer">
@@ -345,7 +377,9 @@ export function LandingPage() {
       {showProjects && (
         <div
           className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => setShowProjects(false)}
+          onClick={() => {
+            if (!resumingProjectId) setShowProjects(false);
+          }}
         >
           <div
             className="bg-[#0c0c0c] border border-zinc-800 rounded-xl w-full max-w-md max-h-[70vh] flex flex-col"
@@ -355,6 +389,7 @@ export function LandingPage() {
               <h3 className="font-black uppercase tracking-wide text-sm">Your Projects</h3>
               <button
                 onClick={() => setShowProjects(false)}
+                disabled={Boolean(resumingProjectId)}
                 className="text-zinc-500 hover:text-white transition cursor-pointer"
               >
                 <X size={16} />
@@ -374,21 +409,29 @@ export function LandingPage() {
                 projects.map((project) => (
                   <button
                     key={project.id}
-                    onClick={() => resumeProject(project.id)}
-                    className="w-full flex items-center justify-between px-4 py-3 rounded-lg hover:bg-[#161616] transition text-left cursor-pointer"
+                    onClick={() => void resumeProject(project)}
+                    disabled={Boolean(resumingProjectId)}
+                    className="w-full flex items-center justify-between px-4 py-3 rounded-lg hover:bg-[#161616] transition text-left cursor-pointer disabled:cursor-wait disabled:opacity-50"
                   >
                     <div className="flex flex-col items-start min-w-0">
                       <span className="text-sm text-zinc-200 truncate max-w-[220px]">
                         {project.title}
                       </span>
                       <span className="text-[10px] font-mono uppercase text-zinc-600">
-                        {project.feLibrary}
+                        {project.library}
                       </span>
                     </div>
-                    <span className="flex items-center gap-1 text-[11px] text-zinc-600 font-mono shrink-0">
-                      <Clock size={11} />
-                      {formatRelativeTime(project.updatedAt)}
-                    </span>
+                    {resumingProjectId === project.id ? (
+                      <span className="flex items-center gap-1.5 text-[11px] text-cyan-300 font-mono shrink-0">
+                        <Loader2 size={11} className="animate-spin" />
+                        Starting runtime
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[11px] text-zinc-600 font-mono shrink-0">
+                        <Clock size={11} />
+                        {formatRelativeTime(project.updatedAt)}
+                      </span>
+                    )}
                   </button>
                 ))
               )}
