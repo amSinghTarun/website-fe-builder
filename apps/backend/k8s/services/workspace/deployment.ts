@@ -51,7 +51,7 @@ export const workspaceDeploymentSpec = (
                 "-c",
                 `
                 set -eu
-                apk add --no-cache git
+                apk add --no-cache git python3 py3-pip
 
                 if [ ! -f /app/my-app/package.json ] || [ ! -d /app/my-app/.git ]; then
                   until [ -f /app/.sky-restore-ready ]; do sleep 1; done

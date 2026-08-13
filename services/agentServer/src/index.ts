@@ -14,6 +14,10 @@ import { type ConversationHistory } from "@sky/db";
 import { tools } from "./tools/index.js";
 import { normalizeToolResult } from "./types/tools.js";
 import { getConfiguredAppRuntimeMonitor } from "./runtime/index.js";
+import {
+  AgentRunCancelledError,
+  agentRunRegistry,
+} from "./runtime/AgentRunRegistry.js";
 
 const app = Fastify().withTypeProvider<ZodTypeProvider>();
 const configuredDatabaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
@@ -70,6 +74,7 @@ app.post(
   async (request, reply) => {
     try {
       assertConfiguredProject(request.body.projectId);
+      const runController = agentRunRegistry.start(request.body.projectId);
       let geminiAgent = new GeminiProvider(
         request.body.projectId,
         undefined,
@@ -79,12 +84,20 @@ app.post(
       const textStream = geminiAgent.agentStream({
         id: "1",
         message: request.body.message,
+        signal: runController.signal,
       });
 
       return new Response(
         async function* () {
-          for await (let output of textStream) {
-            yield `data: ${JSON.stringify(output)}\n\n`;
+          try {
+            for await (let output of textStream) {
+              yield `data: ${JSON.stringify(output)}\n\n`;
+            }
+          } finally {
+            if (!runController.signal.aborted) {
+              runController.abort(new AgentRunCancelledError());
+            }
+            agentRunRegistry.finish(request.body.projectId, runController);
           }
         },
         {
@@ -96,6 +109,30 @@ app.post(
       );
     } catch (error) {
       console.log(error);
+      return reply.code(400).send({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+);
+
+app.post(
+  "/stop",
+  {
+    schema: {
+      body: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    try {
+      assertConfiguredProject(request.body.projectId);
+      return reply.code(200).send({
+        status: "success",
+        stopped: agentRunRegistry.stop(request.body.projectId),
+      });
+    } catch (error) {
       return reply.code(400).send({
         error: error instanceof Error ? error.message : String(error),
       });
@@ -117,8 +154,14 @@ app.post(
   async (request, reply) => {
     try {
       assertConfiguredProject(request.body.projectId);
-      console.log(catchUserInputResolver.get(request.body.uuid));
-      catchUserInputResolver.get(request.body.uuid)?.(request.body.message);
+      const resolver = catchUserInputResolver.get(request.body.uuid);
+      if (!resolver) {
+        return reply.code(409).send({
+          error: "This input request is no longer active",
+        });
+      }
+      resolver(request.body.message);
+      return reply.code(200).send({ status: "success" });
     } catch (error) {
       console.log(error);
       return reply.code(400).send({
@@ -183,7 +226,8 @@ app.post(
         if (!replayableToolNames.has(replayTool.declaration.name!)) {
           replayResults.push({
             toolCall: tool.toolCall,
-            response: "Skipped non-mutating or orchestration tool during replay",
+            response:
+              "Skipped non-mutating or orchestration tool during replay",
           });
           continue;
         }

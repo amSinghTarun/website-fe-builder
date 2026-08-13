@@ -104,7 +104,8 @@ jobs:
             case "$deployment" in
               *-agent-deployment)
                 kubectl set env "$deployment" \
-                  CONTEXT_ARCHIVE_PATH=/user-app/.sky-agent-context
+                  CONTEXT_ARCHIVE_PATH=/user-app/.sky-agent-context \
+                  WORKSPACE_CONTAINER_PATH=/app/my-app
                 kubectl rollout restart "$deployment"
                 ;;
               *-recovery|*-recovery-cron-deployment|*-ws-server-deployment)

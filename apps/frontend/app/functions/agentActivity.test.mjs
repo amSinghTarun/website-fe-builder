@@ -56,6 +56,19 @@ describe("agent activity stream", () => {
     });
   });
 
+  test("shows when the user stops generation", () => {
+    const stopped = reduceAgentActivity(emptyAgentActivity, {
+      type: "stopped",
+      response: "Generation stopped by user.",
+    });
+
+    expect(stopped.items[0]).toEqual({
+      id: "agent-stopped",
+      label: "Generation stopped by user.",
+      status: "complete",
+    });
+  });
+
   test("parses agent questions and shows a waiting activity", () => {
     const response = [
       { id: "framework", question: "Which framework should I use?" },

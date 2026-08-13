@@ -24,6 +24,7 @@ describe("per-project runtime contract", () => {
     expect(container.command[2]).toContain(
       "[ ! -f /app/my-app/package.json ]",
     );
+    expect(container.command[2]).toContain("python3 py3-pip");
     expect(container.ports[0]?.containerPort).toBe(5173);
     expect(container.startupProbe.tcpSocket.port).toBe(5173);
     expect(container.readinessProbe.httpGet.port).toBe(5173);
@@ -55,6 +56,7 @@ describe("per-project runtime contract", () => {
     expect(environment).toMatchObject({
       DATABASE_PROJECT_ID: databaseProjectId,
       WORKSPACE_PATH: "/user-app/my-app",
+      WORKSPACE_CONTAINER_PATH: "/app/my-app",
       CONTEXT_ARCHIVE_PATH: "/user-app/.sky-agent-context",
       WORKSPACE_SERVICE: `${runtimeId}-workspace-service`,
       WORKSPACE_PORT: "5173",

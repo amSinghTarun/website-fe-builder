@@ -103,6 +103,8 @@ Browser API calls use the same-origin `/api` prefix and include credentials so t
 | Create a project        | `POST /createProject`                                               | Stores title/library, then navigates to `/app?project=<id>` |
 | Resume a project        | `GET /projects`, then `GET /chat?projectId=<id>`                    | Resolves its name and message history                       |
 | Send first prompt       | `POST /newChat`, then `POST /sendUserMessage`                       | Provisions the runtime, streams the agent, and loads preview |
+| Answer an agent question | `POST /continue`                                                    | Resumes the paused agent loop                               |
+| Stop generation         | `POST /stop`                                                        | Cancels the browser stream and active project agent run     |
 
 Follow-up prompts use the same streaming agent endpoint. The preview iframe loads the backend-provided `http://project.tarun.co/workspace/<runtimeId>/` URL. The code pane and WebSocket-based file/status UI remain placeholders.
 
@@ -128,6 +130,8 @@ The backend is a Fastify server on port `3001`. Zod schemas provide request/resp
 | `POST /newChat`              | Cookie | Authorizes the project and provisions its Kubernetes runtime           |
 | `GET /getServerUrl`          | Cookie | Placeholder                                                            |
 | `POST /sendUserMessage`      | Cookie | Authorizes the project and proxies its agent SSE stream                 |
+| `POST /continue`             | Cookie | Authorizes the project and forwards an answer to a pending agent prompt |
+| `POST /stop`                 | Cookie | Authorizes the project and cancels its active generation                |
 | `GET /getServerFilesAndCode` | Cookie | Placeholder                                                            |
 
 `/newChat` updates `Project.initialPrompt` and calls `spinupK8sResources(library, projectId)`. The subsequent agent request creates the conversation row, avoiding duplicate first-message storage. The Kubernetes helper keeps the raw database UUID separate and derives the runtime ID internally.
@@ -199,6 +203,7 @@ The Fastify server listens on port `3000` and exposes Scalar docs at `/reference
 | ----------------------- | -------------------------------------------------------------------------- |
 | `POST /chat`            | Creates/reuses a `GeminiProvider` for `projectId` and streams agent events |
 | `POST /continue`        | Resolves a pending `takeUserInput` promise by UUID                         |
+| `POST /stop`            | Aborts the active model/tool loop for the configured project              |
 | `POST /executeFncCalls` | Re-executes stored tool calls, including recorded worktree merges          |
 
 `/chat` emits standard `data: ...\n\n` SSE frames. The control-plane backend forwards this stream without buffering.
@@ -225,7 +230,7 @@ At 1,000 counted tokens, `contextualiseChat` replaces large `updateFile` argumen
 | Tool group       | Tools                                                                        | Behavior                                                                          |
 | ---------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Filesystem       | `readDirectory`, `readFileContent`, `createFile`, `updateFile`, `deleteFile` | Reads and changes files; path-aware tools reject traversal outside `context.cwd`  |
-| Shell            | `executeBash`                                                                | Runs a synchronous arbitrary shell command in `context.cwd`                       |
+| Shell            | `executeBash`                                                                | Uses Kubernetes pod exec to run commands in the workspace container and shared PVC |
 | Task progress    | `createTaskPlan`, `informCompletedTaskFromTaskPlan`                          | Streams plan/progress events and keeps the loop active until planned IDs complete |
 | User interaction | `takeUserInput`                                                              | Streams questions with a UUID and blocks until `/continue` resolves it            |
 | Sub-agents       | `createSubAgent`, `waitForSubAgent`, `getCurrentWorkspace`                   | Creates a Git branch/worktree, runs another Gemini loop, waits, and merges        |
@@ -237,6 +242,10 @@ The main agent now runs with `/user-app/my-app` as its tool root. Tools return a
 Large historical `updateFile` arguments are compacted into content-addressed artifacts under `/user-app/.sky-agent-context/<runtimeId>/` on the project PVC. Context compaction clones Gemini history before replacing large arguments with artifact references, so the canonical tool-call objects are never mutated. A read-only `readContextArtifact` tool can retrieve an archived value by its SHA-256 artifact ID. `updateFile` rejects both these references and the legacy `/root/.loveable-contest` placeholders, preventing context metadata from being written into application source.
 
 When the agent emits an `askInput` SSE event, the frontend renders each question as an inline response form while keeping the original generation stream open. The authenticated backend `/continue` route verifies project ownership and forwards the combined answers to the project agent's `/continue` resolver. Public Nginx permits the paused SSE request to remain open for up to one hour.
+
+The composer becomes a Stop control while generation is active. It calls the authenticated backend `/stop` route and aborts the local SSE fetch. The backend cancels connection retries and proxies the stop to the project agent. The agent's per-project run registry aborts in-flight Gemini streaming, workspace shell execution, sub-agent loops, runtime observation, or a pending input promise, records the interrupted conversation as completed, and emits a terminal `stopped` event.
+
+File tools continue to use the agent pod's `/user-app/my-app` PVC mount. Shell commands instead execute in the workspace pod at `/app/my-app`, so project commands run alongside the actual application toolchain rather than inside the Bun-only agent image. New workspace pods install Python 3 and pip as well as Git; the system prompt tells the agent to use `python3` and install any additional Alpine package directly in the workspace.
 
 `src/agent.ts` is an obsolete, fully commented version of the agent wrapper; the active implementation is `providers/gemini.ts`.
 
@@ -318,18 +327,20 @@ The active dynamic route shapes are intended to be:
 1. The builder calls `/newChat` with the raw database project UUID.
 2. The backend stores `Project.initialPrompt` and provisions the runtime; the agent stores the conversation row when streaming begins.
 3. The backend prefixes the UUID with `sky-` and creates the per-project PVC, four Deployments, and three Services.
-4. The workspace pod creates `my-app`, installs dependencies, and runs Vite.
+4. The workspace pod installs Git, Python 3/pip, creates `my-app`, installs dependencies, and runs Vite.
 5. The frontend calls `/sendUserMessage`; the backend waits for the agent Service, forwards SSE events, and the iframe uses the returned workspace URL.
 
 ### Intended agent iteration
 
 1. A caller routes the prompt to the project agent's `/chat` endpoint.
 2. Gemini emits text and/or function calls.
-3. The agent runs tools against the project working directory and records calls in PostgreSQL.
+3. File tools use the shared PVC through the agent mount; shell tools execute inside the workspace container, and every call is recorded in PostgreSQL.
 4. Plan, user-input, and sub-agent events stream to the caller.
 5. Sub-agents work on separate Git branches/worktrees; completed branches merge into the main project tree.
 6. Vite observes filesystem changes and refreshes the preview; WebSocket/status channels notify the browser.
 7. The recovery worker snapshots the updated volume.
+
+At any point after submission, Stop aborts the frontend request and the backend/agent cancellation chain. A run paused on `takeUserInput` is cancelled without requiring an answer.
 
 The browser-to-agent-to-preview path is connected. The WebSocket relay and code/file panel are still not connected to the UI.
 
@@ -439,7 +450,7 @@ The implementation first had to fix these repository contracts:
 | Workspace port       | Vite listens on `5173`, but the generated Service exposes `3000` and targets `8080`.                                                                                                                                                | Expose Service port `5173` with `targetPort: 5173`.                                                                                                                                                                                                                                   |
 | Service discovery    | The backend creates `*-workspace-service`, `*-agent-service`, and `*-ws-server-service`; dynamic Nginx currently resolves names without `-service`.                                                                                 | Choose one naming contract and use it everywhere. The least disruptive choice is to retain the backend names and make Nginx and internal callers include `-service`.                                                                                                                  |
 | Agent port           | Agent source listened on `3000`, while its generated Deployment and Service used `3001`; the `PORT` environment variable was ignored.                                                                                               | Standardize the source, Deployment, Service, and `PORT` environment variable on `3000`.                                                                                                                                                                                               |
-| Kubernetes access    | `k8s-service-account` is configured for GCP Workload Identity only. No Kubernetes Role grants pod or log reads.                                                                                                                     | Add namespace-scoped RBAC for `get/list` on pods and `get` on `pods/log`. Workload Identity and Kubernetes RBAC are separate permission systems.                                                                                                                                      |
+| Kubernetes access    | `k8s-service-account` is configured for GCP Workload Identity only. No Kubernetes Role grants pod/log reads or workspace execution.                                                                                                | Add namespace-scoped RBAC for `get/list` on pods, `get` on `pods/log`, and `create` on `pods/exec`. Workload Identity and Kubernetes RBAC are separate permission systems.                                                                                                             |
 | Agent dependency     | `@kubernetes/client-node` is installed only in `apps/backend`.                                                                                                                                                                      | Add it directly to `services/agentServer/package.json`; do not rely on workspace hoisting.                                                                                                                                                                                            |
 | Tool result shape    | `GeminiProvider` assumes `{ response }`, but several `updateFile` and `executeBash` branches return a bare string.                                                                                                                  | Define and enforce one `ToolResult` interface before adding runtime metadata.                                                                                                                                                                                                         |
 | Sub-agent completion | Sub-agent work is merged asynchronously, and completed entries remain in the global `subAgents` object.                                                                                                                             | Await the merge as a main-loop event, mark the main workspace dirty, and remove/consume completed registry entries or filter only `IN_PROGRESS` entries.                                                                                                                              |

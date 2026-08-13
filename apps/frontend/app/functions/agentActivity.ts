@@ -187,6 +187,17 @@ export function reduceAgentActivity(
     };
   }
 
+  if (event.type === "stopped") {
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: "agent-stopped",
+        label: responseText(event.response) || "Generation stopped by user",
+        status: "complete",
+      }),
+    };
+  }
+
   if (event.type === "Created a sub agent") {
     const id = responseText(event.response);
     return {

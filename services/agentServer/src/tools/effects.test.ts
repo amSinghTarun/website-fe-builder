@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileTools } from "./file";
-import { bashTool } from "./bash";
+import { createBashTool } from "./bash";
 
 const directories: string[] = [];
 
@@ -87,11 +87,34 @@ describe("tool runtime effects", () => {
 
   test("bash is conservatively treated as runtime-affecting", async () => {
     const cwd = await workspace();
-    const result = bashTool.executeBash.executable(
-      { fullCommand: "true" },
-      { cwd },
-    );
+    let receivedWorkingDirectory: string | undefined;
+    const bashTool = createBashTool(async (_command, options) => {
+      receivedWorkingDirectory = options.workingDirectory;
+      return { output: "ok", exitCode: 0 };
+    });
+    const previousProjectId = process.env.DATABASE_PROJECT_ID;
+    const previousWorkspacePath = process.env.WORKSPACE_PATH;
+    const previousContainerPath = process.env.WORKSPACE_CONTAINER_PATH;
+    process.env.DATABASE_PROJECT_ID = "database-id";
+    process.env.WORKSPACE_PATH = cwd;
+    process.env.WORKSPACE_CONTAINER_PATH = "/app/my-app";
+    let result;
+    try {
+      result = await bashTool.executeBash.executable(
+        { fullCommand: "true" },
+        { cwd },
+      );
+    } finally {
+      if (previousProjectId == null) delete process.env.DATABASE_PROJECT_ID;
+      else process.env.DATABASE_PROJECT_ID = previousProjectId;
+      if (previousWorkspacePath == null) delete process.env.WORKSPACE_PATH;
+      else process.env.WORKSPACE_PATH = previousWorkspacePath;
+      if (previousContainerPath == null)
+        delete process.env.WORKSPACE_CONTAINER_PATH;
+      else process.env.WORKSPACE_CONTAINER_PATH = previousContainerPath;
+    }
 
     expect(result.effects?.runtimeMayChange).toBe(true);
+    expect(receivedWorkingDirectory).toBe("/app/my-app");
   });
 });

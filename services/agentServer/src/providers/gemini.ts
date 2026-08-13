@@ -9,6 +9,7 @@ import {
 import { tools, mergeWorktree } from "../tools";
 import "dotenv/config";
 import {
+  catchUserInputResolver,
   getOutstandingSubAgentIds,
   rejectSubAgent,
   resolveSubAgent,
@@ -25,6 +26,11 @@ import {
   archiveLargeUpdateFileArguments,
   getContextArchiveConfig,
 } from "../context/contextArchive";
+import {
+  AgentRunCancelledError,
+  abortable,
+  throwIfRunCancelled,
+} from "../runtime/AgentRunRegistry";
 
 export class GeminiProvider {
   private static sessions: {
@@ -134,6 +140,7 @@ export class GeminiProvider {
       onChunk?: (chunk: { type: string; response: any; uuid?: string }) => void;
       onFinish?: () => void;
     };
+    signal?: AbortSignal;
   }) {
     let summary = "";
     let dbConverstaionId;
@@ -202,6 +209,7 @@ export class GeminiProvider {
       };
 
       while (hasToolCall) {
+        throwIfRunCancelled(args.signal);
         let streamResponse;
         try {
           console.log("\n\n\n------------------------------------");
@@ -233,6 +241,8 @@ export class GeminiProvider {
             }
           }
 
+          throwIfRunCancelled(args.signal);
+
           let messageForStream = {
             message: [...newMessage, ...subAgentResponse],
           };
@@ -244,8 +254,12 @@ export class GeminiProvider {
           streamResponse =
             await GeminiProvider.sessions[
               this.sessionKey
-            ]!.chat.sendMessageStream(messageForStream);
+            ]!.chat.sendMessageStream({
+              ...messageForStream,
+              config: { abortSignal: args.signal },
+            });
         } catch (error: any) {
+          if (args.signal?.aborted) throw new AgentRunCancelledError();
           console.log(args.id, " - ", error);
           const errorMessage =
             error.status === 429
@@ -259,6 +273,7 @@ export class GeminiProvider {
         }
 
         for await (let response of streamResponse) {
+          throwIfRunCancelled(args.signal);
           hasToolCall = false;
 
           if (response.functionCalls && response.functionCalls.length > 0) {
@@ -271,6 +286,7 @@ export class GeminiProvider {
             let runtimeDirtyThisBatch = false;
 
             for (let functionCall of response.functionCalls) {
+              throwIfRunCancelled(args.signal);
               // console.log("FUNCTION NAME : ", functionCall.name);
               try {
                 const tool = tools[functionCall.name as keyof typeof tools];
@@ -292,11 +308,16 @@ export class GeminiProvider {
                   args: {
                     ...(functionCall.args as any),
                   },
-                  context: { cwd: this.cwd },
+                  context: { cwd: this.cwd, signal: args.signal },
                 };
 
                 const output = normalizeToolResult(
-                  await tool.executable(toolArgs.args, toolArgs.context),
+                  await abortable(
+                    Promise.resolve(
+                      tool.executable(toolArgs.args, toolArgs.context),
+                    ),
+                    args.signal,
+                  ),
                 );
 
                 if (output.effects?.runtimeMayChange) {
@@ -338,6 +359,7 @@ export class GeminiProvider {
                       run: subAgentSession.agentLoop({
                         id: functionCall.args?.id as string,
                         message: functionCall.args?.prompt as string,
+                        signal: args.signal,
                         handler: { onChunk: args.handler.onChunk },
                       }),
                     });
@@ -362,7 +384,16 @@ export class GeminiProvider {
                     });
 
                   if (output.yield?.resolver)
-                    output.response = await output.yield.resolver;
+                    try {
+                      output.response = await abortable(
+                        output.yield.resolver,
+                        args.signal,
+                      );
+                    } finally {
+                      if (output.yield.uuid) {
+                        catchUserInputResolver.delete(output.yield.uuid);
+                      }
+                    }
                 }
 
                 functionCallResponses.push({
@@ -375,6 +406,7 @@ export class GeminiProvider {
                   },
                 });
               } catch (error: any) {
+                if (error instanceof AgentRunCancelledError) throw error;
                 functionCallResponses.push({
                   functionResponse: {
                     ...(functionCall.id && { id: functionCall.id }),
@@ -432,7 +464,11 @@ export class GeminiProvider {
             });
 
             if (args.id === "1" && runtimeDirtyThisBatch) {
-              const runtimeState = await this.observeRuntime(args.handler);
+              throwIfRunCancelled(args.signal);
+              const runtimeState = await abortable(
+                this.observeRuntime(args.handler),
+                args.signal,
+              );
               const repairMessage = runtimeRepairMessage(runtimeState, true);
 
               if (repairMessage) {
@@ -450,6 +486,8 @@ export class GeminiProvider {
             });
           summary += ` ${response.text ?? ""}`;
         }
+
+        throwIfRunCancelled(args.signal);
 
         if (
           !hasToolCall &&
@@ -476,7 +514,10 @@ export class GeminiProvider {
           ];
           hasToolCall = true;
         } else if (!hasToolCall && args.id === "1" && runtimeTouched) {
-          const runtimeState = await this.observeRuntime(args.handler);
+          const runtimeState = await abortable(
+            this.observeRuntime(args.handler),
+            args.signal,
+          );
 
           const repairMessage = runtimeRepairMessage(runtimeState, false);
           if (repairMessage) {
@@ -557,6 +598,24 @@ export class GeminiProvider {
         summary: summary,
       };
     } catch (error) {
+      if (error instanceof AgentRunCancelledError) {
+        const stoppedMessage = "Generation stopped by user.";
+        summary += ` ${stoppedMessage}`;
+        if (dbConverstaionId) {
+          await prisma.conversationHistory.update({
+            where: { id: dbConverstaionId.id },
+            data: { completed: true, output: summary },
+          });
+        }
+        args.handler.onChunk?.({ type: "stopped", response: stoppedMessage });
+        args.handler.onFinish?.();
+        return {
+          history:
+            GeminiProvider.sessions[this.sessionKey]?.chat.getHistory() ?? [],
+          id: args.id,
+          summary,
+        };
+      }
       console.log(error);
       throw error;
     }
@@ -570,7 +629,11 @@ export class GeminiProvider {
     });
   }
 
-  public async *agentStream(args: { id: string; message: string }) {
+  public async *agentStream(args: {
+    id: string;
+    message: string;
+    signal?: AbortSignal;
+  }) {
     try {
       let controller: ReadableStreamDefaultController<any>;
 
@@ -591,6 +654,7 @@ export class GeminiProvider {
       void this.agentLoop({
         message: args.message,
         id: args.id,
+        signal: args.signal,
         handler: {
           onChunk: onChunk,
           onFinish: onFinish,

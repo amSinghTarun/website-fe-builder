@@ -88,6 +88,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                 { name: "DATABASE_PROJECT_ID", value: databaseProjectId },
                 { name: "APP_NAMESPACE", value: "default" },
                 { name: "WORKSPACE_PATH", value: "/user-app/my-app" },
+                { name: "WORKSPACE_CONTAINER_PATH", value: "/app/my-app" },
                 {
                   name: "CONTEXT_ARCHIVE_PATH",
                   value: "/user-app/.sky-agent-context",

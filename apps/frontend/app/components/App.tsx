@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Circle,
   AlertCircle,
+  Square,
 } from "lucide-react";
 import { useAuthStore } from "../store/authStore";
 import { useState, useRef, useEffect } from "react";
@@ -78,8 +79,11 @@ export function App() {
     useState<PendingAgentInput | null>(null);
   const [agentAnswers, setAgentAnswers] = useState<Record<string, string>>({});
   const [submittingAgentInput, setSubmittingAgentInput] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const stopRequestedRef = useRef(false);
 
   // Resolve project name (URL param, or look up from /projects when resuming)
   useEffect(() => {
@@ -192,14 +196,22 @@ export function App() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isGenerating, pendingAgentInput]);
 
+  useEffect(
+    () => () => {
+      generationAbortRef.current?.abort();
+    },
+    [],
+  );
+
   const isFirstMessage = messages.length === 0;
 
-  const streamAgentMessage = async (prompt: string) => {
+  const streamAgentMessage = async (prompt: string, signal: AbortSignal) => {
     const response = await fetch(apiUrl("/sendUserMessage"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId, message: prompt }),
+      signal,
     });
 
     if (!response.ok) {
@@ -212,6 +224,7 @@ export function App() {
     const assistantId = createClientId();
     let assistantStarted = false;
     let streamError: string | null = null;
+    let streamStopped = false;
     let buffer = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -268,6 +281,8 @@ export function App() {
             ? chunk.response
             : "The project agent encountered an error";
       }
+
+      if (chunk.type === "stopped") streamStopped = true;
     };
 
     while (true) {
@@ -283,7 +298,7 @@ export function App() {
 
     if (buffer.trim()) consumeEvent(buffer);
     if (streamError) throw new Error(streamError);
-    if (!assistantStarted) {
+    if (!assistantStarted && !streamStopped) {
       setMessages((previous) => [
         ...previous,
         {
@@ -315,6 +330,9 @@ export function App() {
     setPendingAgentInput(null);
     setAgentAnswers({});
     setMessage("");
+    stopRequestedRef.current = false;
+    const generationController = new AbortController();
+    generationAbortRef.current = generationController;
     setIsGenerating(true);
 
     try {
@@ -324,6 +342,7 @@ export function App() {
           credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ projectId, initialPrompt: trimmed }),
+          signal: generationController.signal,
         });
 
         if (!res.ok) {
@@ -335,14 +354,58 @@ export function App() {
         setPreviewUrl(json.data?.workspaceUrl ?? null);
       }
 
-      await streamAgentMessage(trimmed);
+      if (stopRequestedRef.current) return;
+      await streamAgentMessage(trimmed, generationController.signal);
     } catch (err: unknown) {
+      if (stopRequestedRef.current || generationController.signal.aborted) return;
       const errMessage = err instanceof Error ? err.message : "Something went wrong";
       setPendingAgentInput(null);
       setAgentAnswers({});
       toast.error(errMessage);
     } finally {
+      if (generationAbortRef.current === generationController) {
+        generationAbortRef.current = null;
+      }
       setIsGenerating(false);
+      setIsStopping(false);
+    }
+  };
+
+  const stopGeneration = async () => {
+    if (!projectId || !isGenerating || isStopping) return;
+
+    setIsStopping(true);
+    stopRequestedRef.current = true;
+    setPendingAgentInput(null);
+    setAgentAnswers({});
+    setSubmittingAgentInput(false);
+    setAgentActivity((previous) =>
+      reduceAgentActivity(previous, {
+        type: "stopped",
+        response: "Generation stopped by user.",
+      }),
+    );
+
+    const stopRequest = fetch(apiUrl("/stop"), {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId }),
+    });
+    generationAbortRef.current?.abort();
+
+    try {
+      const response = await stopRequest;
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Unable to stop generation");
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to stop generation",
+      );
+    } finally {
+      setIsStopping(false);
     }
   };
 
@@ -576,13 +639,29 @@ export function App() {
                 placeholder="Type a message..."
                 disabled={isGenerating}
               />
-              <button
-                type="submit"
-                disabled={isGenerating || !message.trim()}
-                className="px-3 text-cyan-300 disabled:text-zinc-700 disabled:cursor-not-allowed"
-              >
-                →
-              </button>
+              {isGenerating ? (
+                <button
+                  type="button"
+                  onClick={stopGeneration}
+                  disabled={isStopping}
+                  className="flex items-center gap-1.5 px-3 text-red-400 transition hover:text-red-300 disabled:cursor-not-allowed disabled:text-zinc-700"
+                >
+                  {isStopping ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <Square size={12} fill="currentColor" />
+                  )}
+                  <span className="text-xs font-semibold">Stop</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!message.trim()}
+                  className="px-3 text-cyan-300 disabled:text-zinc-700 disabled:cursor-not-allowed"
+                >
+                  →
+                </button>
+              )}
             </form>
           </div>
         </section>

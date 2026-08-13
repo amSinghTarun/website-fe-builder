@@ -44,6 +44,7 @@ function projectRuntimeRoutes(databaseProjectId: string) {
 async function openAgentStream(
   databaseProjectId: string,
   message: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const runtimeId = toRuntimeId(databaseProjectId);
   const url = `http://${runtimeId}-agent-service.default.svc.cluster.local:3000/chat`;
@@ -55,6 +56,7 @@ async function openAgentStream(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, projectId: databaseProjectId }),
+        signal,
       });
 
       if (response.ok) return response;
@@ -62,15 +64,64 @@ async function openAgentStream(
       lastError = `Agent returned ${response.status}: ${await response.text()}`;
       if (![502, 503, 504].includes(response.status)) break;
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       lastError = error instanceof Error ? error.message : String(error);
     }
 
     if (attempt < 60) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await new Promise<void>((resolve, reject) => {
+        const finishWait = () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const timer = setTimeout(finishWait, 2_000);
+        const onAbort = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          reject(signal?.reason ?? new Error("Generation stopped by user"));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+      });
     }
   }
 
   throw new Error(`Unable to reach the project agent: ${lastError}`);
+}
+
+const activeAgentRequests = new Map<string, AbortController>();
+
+async function stopAgent(databaseProjectId: string): Promise<boolean> {
+  const activeRequest = activeAgentRequests.get(databaseProjectId);
+  const stoppedBackendRequest = Boolean(
+    activeRequest && !activeRequest.signal.aborted,
+  );
+  activeRequest?.abort(new Error("Generation stopped by user"));
+
+  const runtimeId = toRuntimeId(databaseProjectId);
+  try {
+    const response = await fetch(
+      `http://${runtimeId}-agent-service.default.svc.cluster.local:3000/stop`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: databaseProjectId }),
+        signal: AbortSignal.timeout(3_000),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Agent rejected the stop request (${response.status}): ${await response.text()}`,
+      );
+    }
+
+    const result = (await response.json()) as { stopped?: boolean };
+    return stoppedBackendRequest || result.stopped === true;
+  } catch {
+    if (stoppedBackendRequest) return true;
+    return false;
+  }
 }
 
 async function continueAgent(
@@ -457,20 +508,95 @@ app.post(
       });
     }
 
-    const agentResponse = await openAgentStream(
-      project.id,
-      request.body.message,
-    );
+    const currentRequest = activeAgentRequests.get(project.id);
+    if (currentRequest && !currentRequest.signal.aborted) {
+      return reply.code(409).send({
+        status: "error",
+        message: "A generation is already active for this project",
+      });
+    }
+
+    const requestController = new AbortController();
+    activeAgentRequests.set(project.id, requestController);
+    const abortOnClientDisconnect = () => {
+      requestController.abort(new Error("Client disconnected"));
+    };
+    request.raw.once("aborted", abortOnClientDisconnect);
+    reply.raw.once("close", abortOnClientDisconnect);
+
+    let agentResponse: Response;
+    try {
+      agentResponse = await openAgentStream(
+        project.id,
+        request.body.message,
+        requestController.signal,
+      );
+    } catch (error) {
+      if (activeAgentRequests.get(project.id) === requestController) {
+        activeAgentRequests.delete(project.id);
+      }
+      request.raw.removeListener("aborted", abortOnClientDisconnect);
+      reply.raw.removeListener("close", abortOnClientDisconnect);
+      throw error;
+    }
 
     if (!agentResponse.body) {
+      activeAgentRequests.delete(project.id);
       throw new Error("Agent returned an empty response stream");
     }
+
+    const responseStream = Readable.fromWeb(agentResponse.body as any);
+    const cleanup = () => {
+      request.raw.removeListener("aborted", abortOnClientDisconnect);
+      reply.raw.removeListener("close", abortOnClientDisconnect);
+      if (activeAgentRequests.get(project.id) === requestController) {
+        activeAgentRequests.delete(project.id);
+      }
+    };
+    responseStream.once("close", cleanup);
+    responseStream.once("end", cleanup);
+    responseStream.once("error", cleanup);
 
     return reply
       .header("Content-Type", "text/event-stream")
       .header("Cache-Control", "no-cache")
       .header("X-Accel-Buffering", "no")
-      .send(Readable.fromWeb(agentResponse.body as any));
+      .send(responseStream);
+  },
+);
+
+app.post(
+  "/stop",
+  {
+    onRequest: checkAuth,
+    schema: {
+      body: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.body.projectId,
+        userId: request.userId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    const stopped = await stopAgent(project.id);
+    return reply.code(200).send({
+      status: "success",
+      message: stopped ? "Generation stopped" : "No active generation",
+      stopped,
+    });
   },
 );
 

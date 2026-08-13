@@ -18,6 +18,7 @@ export enum Tools {
 
 export interface ToolContext {
   cwd: string;
+  signal?: AbortSignal;
 }
 
 export interface ToolEffects {
