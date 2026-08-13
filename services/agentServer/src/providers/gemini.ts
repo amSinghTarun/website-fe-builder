@@ -16,6 +16,10 @@ import {
 } from "../helper";
 import {
   createFrontendSystemPrompt,
+  completionAgentPrompt,
+  completionFallbackMessage,
+  createCompletionRewriteRequest,
+  isConciseCompletionMessage,
   requiresTaskPlan,
   requiresWorkspaceMutation,
   summariseAgentPrompt,
@@ -125,6 +129,31 @@ export class GeminiProvider {
     return summary;
   }
 
+  private static async rewriteCompletionMessage(args: {
+    userRequest: string;
+    draft: string;
+    workspaceChanged: boolean;
+    runtimeVerified: boolean;
+  }): Promise<string> {
+    const fallback = completionFallbackMessage(args.runtimeVerified);
+
+    try {
+      const completionAgent = GeminiProvider.geminiClient.chats.create({
+        model: "gemini-2.5-flash",
+        config: { systemInstruction: completionAgentPrompt },
+      });
+      const response = await completionAgent.sendMessage({
+        message: createCompletionRewriteRequest(args),
+      });
+      const message = response.text?.trim() ?? "";
+
+      return isConciseCompletionMessage(message) ? message : fallback;
+    } catch (error) {
+      console.error("Unable to format completion message:", error);
+      return fallback;
+    }
+  }
+
   private static async contextualiseChat(
     history: Content[],
     sessionKey: string,
@@ -221,6 +250,7 @@ export class GeminiProvider {
       let completedTaskIds = new Set<string>();
       let runtimeTouched = false;
       let workspaceChanged = false;
+      let runtimeVerified = false;
       let taskPlanCreated = false;
       let noChangeRetries = 0;
       let toolActivitySequence = 0;
@@ -647,6 +677,7 @@ export class GeminiProvider {
             this.observeRuntime(args.handler, true, args.signal),
             args.signal,
           );
+          runtimeVerified = runtimeState?.status === "running";
 
           const repairMessage = runtimeRepairMessage(
             runtimeState,
@@ -689,11 +720,22 @@ export class GeminiProvider {
         // Do not expose a tutorial-style answer that failed the implementation
         // contract. Only stream text from a valid turn.
         if (!rejectedProseCompletion && !hasToolCall && withheldTurnText) {
+          const finalMessage = mutationRequired
+            ? await abortable(
+                GeminiProvider.rewriteCompletionMessage({
+                  userRequest: args.message,
+                  draft: withheldTurnText,
+                  workspaceChanged,
+                  runtimeVerified,
+                }),
+                args.signal,
+              )
+            : withheldTurnText;
           args.handler.onChunk?.({
             type: "message",
-            response: withheldTurnText,
+            response: finalMessage,
           });
-          summary += ` ${withheldTurnText}`;
+          summary += ` ${finalMessage}`;
         }
       }
 

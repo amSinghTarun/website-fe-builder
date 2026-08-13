@@ -20,6 +20,8 @@ describe("frontend agent policy", () => {
     expect(reactPrompt).toContain("not a centered stack");
     expect(reactPrompt).toContain("focus-visible");
     expect(reactPrompt).toContain("responsive at mobile and desktop widths");
+    expect(reactPrompt).toContain("at most 80 words");
+    expect(reactPrompt).toContain("Never produce a file-by-file changelog");
   });
 
   test("keeps delegated or summarized context below the hard contract", () => {
