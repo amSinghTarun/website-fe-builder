@@ -117,4 +117,22 @@ describe("tool runtime effects", () => {
     expect(result.effects?.runtimeMayChange).toBe(true);
     expect(receivedWorkingDirectory).toBe("/app/my-app");
   });
+
+  test("bash refuses to start a second foreground preview server", async () => {
+    const cwd = await workspace();
+    let executed = false;
+    const bashTool = createBashTool(async () => {
+      executed = true;
+      return { output: "unexpected", exitCode: 0 };
+    });
+
+    const result = await bashTool.executeBash.executable(
+      { fullCommand: "npm run dev" },
+      { cwd },
+    );
+
+    expect(executed).toBe(false);
+    expect(result.response).toContain("preview server is already running");
+    expect(result.effects).toBeUndefined();
+  });
 });

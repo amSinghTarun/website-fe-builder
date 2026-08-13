@@ -6,6 +6,9 @@ import path from "node:path";
 
 type WorkspaceCommandExecutor = typeof executeInWorkspace;
 
+const FOREGROUND_SERVER_COMMAND =
+  /^\s*(?:(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(?:dev|start|serve|preview)|npx\s+vite|vite)(?:\s|$)/i;
+
 export const createBashTool = (
   workspaceCommandExecutor: WorkspaceCommandExecutor = executeInWorkspace,
 ) => ({
@@ -32,6 +35,13 @@ export const createBashTool = (
       context: ToolContext,
     ): Promise<ToolResult> => {
       try {
+        if (FOREGROUND_SERVER_COMMAND.test(args.fullCommand)) {
+          return {
+            response:
+              "The workspace preview server is already running. Do not start another dev server; inspect files, run a finite check such as `npm run build`, and use the existing preview.",
+          };
+        }
+
         const databaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
         if (!databaseProjectId) {
           throw new Error("DATABASE_PROJECT_ID is required");
