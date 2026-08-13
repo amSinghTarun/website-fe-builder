@@ -435,6 +435,12 @@ export function App() {
       const errMessage = err instanceof Error ? err.message : "Something went wrong";
       setPendingAgentInput(null);
       setAgentAnswers({});
+      setAgentActivity((previous) =>
+        reduceAgentActivity(previous, {
+          type: "error",
+          response: errMessage,
+        }),
+      );
       toast.error(errMessage);
     } finally {
       if (generationAbortRef.current === generationController) {

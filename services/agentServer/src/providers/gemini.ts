@@ -1,7 +1,7 @@
 import {
   GoogleGenAI,
-  FunctionCallingConfigMode,
   type Chat,
+  type FunctionDeclaration,
   type PartListUnion,
   type SendMessageParameters,
   type Content,
@@ -38,6 +38,7 @@ import {
   throwIfRunCancelled,
 } from "../runtime/AgentRunRegistry";
 import { summarizeToolCall, type ToolActivityPhase } from "../toolActivity";
+import { createGeminiGenerationConfig } from "./geminiConfig";
 
 const implementationMutationTools = new Set([
   "createFile",
@@ -48,7 +49,11 @@ const implementationMutationTools = new Set([
 
 export class GeminiProvider {
   private static sessions: {
-    [projectId: string]: { chat: Chat; contextualiseCount?: number };
+    [projectId: string]: {
+      chat: Chat;
+      systemInstruction: string;
+      contextualiseCount?: number;
+    };
   } = {};
   public cwd: string;
   public static newMessages: Map<string, SendMessageParameters[]> = new Map([]);
@@ -75,38 +80,32 @@ export class GeminiProvider {
     this.cwd = cwd ?? "";
     if (!GeminiProvider.sessions[this.sessionKey])
       GeminiProvider.sessions[this.sessionKey] = {
-        chat: this.createNewSession({ newSystemPrompt: systemPrompt }),
+        ...this.createNewSession({ newSystemPrompt: systemPrompt }),
         contextualiseCount: 0,
       };
+  }
+
+  private get functionDeclarations(): FunctionDeclaration[] {
+    return Object.values(tools).map((tool) => tool.declaration);
   }
 
   private createNewSession(args: {
     newSystemPrompt?: string;
     history?: Content[];
-  }) {
-    let session = GeminiProvider.geminiClient.chats.create({
+  }): { chat: Chat; systemInstruction: string } {
+    const systemInstruction = createFrontendSystemPrompt(
+      this.frontendLibrary,
+      args.newSystemPrompt,
+    );
+    const chat = GeminiProvider.geminiClient.chats.create({
       model: "gemini-2.5-flash",
       history: args.history ?? [],
-      config: {
-        systemInstruction: createFrontendSystemPrompt(
-          this.frontendLibrary,
-          args.newSystemPrompt,
-        ),
-        toolConfig: {
-          functionCallingConfig: {
-            mode: FunctionCallingConfigMode.AUTO,
-          },
-        },
-        tools: [
-          {
-            functionDeclarations: Object.entries(tools).map(
-              ([_name, tool], _index) => tool.declaration,
-            ),
-          },
-        ],
-      },
+      config: createGeminiGenerationConfig({
+        systemInstruction,
+        functionDeclarations: this.functionDeclarations,
+      }),
     });
-    return session;
+    return { chat, systemInstruction };
   }
 
   private static async summariseChat(history: Content[]): Promise<string> {
@@ -274,7 +273,7 @@ export class GeminiProvider {
                 );
 
               GeminiProvider.sessions[this.sessionKey] = {
-                chat: this.createNewSession({
+                ...this.createNewSession({
                   history: inLoopContextualiseChat.history,
                 }),
                 contextualiseCount: ++inLoopContextualiseChat.contextedCount,
@@ -292,13 +291,19 @@ export class GeminiProvider {
 
           subAgentResponse = [];
 
-          streamResponse =
-            await GeminiProvider.sessions[
-              this.sessionKey
-            ]!.chat.sendMessageStream({
-              ...messageForStream,
-              config: { abortSignal: args.signal },
-            });
+          const session = GeminiProvider.sessions[this.sessionKey]!;
+          streamResponse = await session.chat.sendMessageStream({
+            ...messageForStream,
+            // A per-request config does not inherit the chat config in
+            // @google/genai. Repeat the system/tool configuration here so
+            // adding an abort signal does not silently remove every tool.
+            config: createGeminiGenerationConfig({
+              systemInstruction: session.systemInstruction,
+              functionDeclarations: this.functionDeclarations,
+              abortSignal: args.signal,
+              requireWorkspaceTool: mutationRequired && !workspaceChanged,
+            }),
+          });
         } catch (error: any) {
           if (args.signal?.aborted) throw new AgentRunCancelledError();
           console.log(args.id, " - ", error);
@@ -684,14 +689,14 @@ export class GeminiProvider {
             let sessionSummary = await GeminiProvider.summariseChat(history);
 
             GeminiProvider.sessions[this.sessionKey] = {
-              chat: this.createNewSession({
+              ...this.createNewSession({
                 newSystemPrompt: sessionSummary,
               }),
               contextualiseCount: 0,
             };
           } else {
             GeminiProvider.sessions[this.sessionKey] = {
-              chat: this.createNewSession({
+              ...this.createNewSession({
                 history: newHistory,
               }),
               contextualiseCount: ++contextedCount,
