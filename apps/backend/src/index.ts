@@ -146,6 +146,22 @@ async function continueAgent(
   }
 }
 
+async function getAgentFiles(databaseProjectId: string): Promise<unknown> {
+  const runtimeId = toRuntimeId(databaseProjectId);
+  const response = await fetch(
+    `http://${runtimeId}-agent-service.default.svc.cluster.local:3000/files?projectId=${encodeURIComponent(databaseProjectId)}`,
+    { signal: AbortSignal.timeout(10_000) },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Unable to read generated files (${response.status}): ${await response.text()}`,
+    );
+  }
+
+  return response.json();
+}
+
 const app = fastify({
   logger: true,
 }).withTypeProvider<ZodTypeProvider>();
@@ -641,11 +657,29 @@ app.get(
   "/getServerFilesAndCode",
   {
     onRequest: checkAuth,
+    schema: {
+      querystring: z.object({
+        projectId: z.string(),
+      }),
+    },
   },
   async (request, reply) => {
-    // expose an api from the agent to get the code and files of the project, cache the files in browser,
-    // also send the changes files as well, so that browser can store them in state
-    //
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.query.projectId,
+        userId: request.userId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    return reply.code(200).send(await getAgentFiles(project.id));
   },
 );
 

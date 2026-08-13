@@ -7,9 +7,11 @@ import {
   Circle,
   AlertCircle,
   Square,
+  FileCode2,
+  RefreshCw,
 } from "lucide-react";
 import { useAuthStore } from "../store/authStore";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { apiUrl } from "../config";
@@ -51,6 +53,12 @@ type PendingAgentInput = {
   questions: AgentQuestion[];
 };
 
+type ProjectFile = {
+  path: string;
+  content: string;
+  size: number;
+};
+
 const SUGGESTIONS = [
   "A kanban board with drag and drop",
   "A landing page for a coffee subscription",
@@ -80,10 +88,47 @@ export function App() {
   const [agentAnswers, setAgentAnswers] = useState<Record<string, string>>({});
   const [submittingAgentInput, setSubmittingAgentInput] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const generationAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
+
+  const loadProjectFiles = useCallback(async () => {
+    if (!projectId) return;
+
+    setLoadingFiles(true);
+    setFileError(null);
+    try {
+      const response = await fetch(
+        apiUrl(
+          `/getServerFilesAndCode?projectId=${encodeURIComponent(projectId)}`,
+        ),
+        { credentials: "include" },
+      );
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(result?.message || result?.error || "Unable to load files");
+      }
+
+      const files = (result?.data ?? []) as ProjectFile[];
+      setProjectFiles(files);
+      setSelectedFilePath((current) => {
+        if (current && files.some((file) => file.path === current)) return current;
+        return (
+          files.find((file) => /(^|\/)src\/App\.(tsx|ts|jsx|js)$/.test(file.path))
+            ?.path ?? files[0]?.path ?? null
+        );
+      });
+    } catch (error) {
+      setFileError(error instanceof Error ? error.message : "Unable to load files");
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, [projectId]);
 
   // Resolve project name (URL param, or look up from /projects when resuming)
   useEffect(() => {
@@ -203,7 +248,15 @@ export function App() {
     [],
   );
 
+  useEffect(() => {
+    if (activeTab === "code" && !isGenerating) {
+      void loadProjectFiles();
+    }
+  }, [activeTab, isGenerating, loadProjectFiles]);
+
   const isFirstMessage = messages.length === 0;
+  const selectedFile =
+    projectFiles.find((file) => file.path === selectedFilePath) ?? null;
 
   const streamAgentMessage = async (prompt: string, signal: AbortSignal) => {
     const response = await fetch(apiUrl("/sendUserMessage"), {
@@ -685,28 +738,89 @@ export function App() {
               >
                 <Code2 size={13} /> Code
               </button>
+              {activeTab === "code" && (
+                <button
+                  type="button"
+                  onClick={() => void loadProjectFiles()}
+                  disabled={loadingFiles || isGenerating}
+                  className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-zinc-500 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw
+                    size={13}
+                    className={loadingFiles ? "animate-spin" : ""}
+                  />
+                  Refresh files
+                </button>
+              )}
             </div>
 
-            <div className="flex-1 flex items-center justify-center">
-              {messages.length === 0 ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center">
+              {activeTab === "code" ? (
+                loadingFiles && projectFiles.length === 0 ? (
+                  <div className="flex items-center gap-2 text-sm text-zinc-500">
+                    <Loader2 size={14} className="animate-spin" /> Loading generated files...
+                  </div>
+                ) : fileError && projectFiles.length === 0 ? (
+                  <div className="max-w-sm px-6 text-center text-sm text-red-400">
+                    {fileError}
+                  </div>
+                ) : projectFiles.length === 0 ? (
+                  <div className="text-center text-sm text-zinc-600">
+                    No generated source files are available yet.
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-0 w-full overflow-hidden rounded-b-lg bg-[#090909]">
+                    <aside className="w-60 shrink-0 overflow-y-auto border-r border-stone-900 py-2">
+                      <div className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+                        Files · {projectFiles.length}
+                      </div>
+                      {projectFiles.map((file) => (
+                        <button
+                          key={file.path}
+                          type="button"
+                          title={file.path}
+                          onClick={() => setSelectedFilePath(file.path)}
+                          className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition ${
+                            selectedFilePath === file.path
+                              ? "bg-cyan-300/10 text-cyan-300"
+                              : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200"
+                          }`}
+                        >
+                          <FileCode2 size={13} className="shrink-0" />
+                          <span className="truncate">{file.path}</span>
+                        </button>
+                      ))}
+                    </aside>
+                    <section className="flex min-w-0 flex-1 flex-col">
+                      <div className="flex h-9 shrink-0 items-center justify-between border-b border-stone-900 px-3 text-xs text-zinc-500">
+                        <span className="truncate">{selectedFile?.path}</span>
+                        {selectedFile && (
+                          <span className="ml-3 shrink-0 text-[10px] text-zinc-700">
+                            {selectedFile.size.toLocaleString()} bytes
+                          </span>
+                        )}
+                      </div>
+                      <pre className="min-h-0 flex-1 overflow-auto p-4 text-xs leading-5 text-zinc-300">
+                        <code>{selectedFile?.content ?? ""}</code>
+                      </pre>
+                    </section>
+                  </div>
+                )
+              ) : messages.length === 0 ? (
                 <div className="text-center text-zinc-600 text-sm">
                   <Sparkles className="mx-auto mb-3 text-zinc-700" size={24} />
                   Your app will appear here once you send a prompt.
                 </div>
-              ) : activeTab === "preview" && previewUrl ? (
+              ) : previewUrl ? (
                 <iframe
                   title="app-preview"
                   className="w-full h-full rounded-b-lg bg-white"
                   src={previewUrl}
                 />
-              ) : activeTab === "preview" ? (
+              ) : (
                 <div className="text-center text-zinc-600 text-sm">
                   The preview will appear when the project runtime is ready.
                 </div>
-              ) : (
-                <pre className="w-full h-full overflow-auto p-4 text-xs text-zinc-400 font-mono">
-                  {"// Generated code will render here"}
-                </pre>
               )}
             </div>
           </div>

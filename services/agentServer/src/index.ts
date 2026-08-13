@@ -18,6 +18,7 @@ import {
   AgentRunCancelledError,
   agentRunRegistry,
 } from "./runtime/AgentRunRegistry.js";
+import { listWorkspaceFiles } from "./runtime/workspaceFiles.js";
 
 const app = Fastify().withTypeProvider<ZodTypeProvider>();
 const configuredDatabaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
@@ -60,6 +61,31 @@ await app.register(scalar, {
 });
 
 app.get("/health", async () => ({ status: "success" }));
+
+app.get(
+  "/files",
+  {
+    schema: {
+      querystring: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    try {
+      assertConfiguredProject(request.query.projectId);
+      return reply.code(200).send({
+        status: "success",
+        data: await listWorkspaceFiles(workspacePath),
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+);
 
 app.post(
   "/chat",

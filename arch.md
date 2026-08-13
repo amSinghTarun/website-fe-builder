@@ -89,7 +89,7 @@ The frontend uses React 19, React Router framework mode with SSR enabled, Vite, 
 - `app/functions/auth.ts` implements the current signup request.
 - `app/hooks/useAuth.ts` connects that request to Zustand and toast state.
 - `app/components/LandingPage.tsx` provides signup, project creation, project resume, feature cards, and the static architecture image.
-- `app/components/App.tsx` provides chat history, agent streaming, and the runtime preview iframe. The code panel remains a placeholder.
+- `app/components/App.tsx` provides chat history, agent streaming, the runtime preview iframe, and a read-only generated-file browser.
 
 ### Backend calls
 
@@ -106,7 +106,7 @@ Browser API calls use the same-origin `/api` prefix and include credentials so t
 | Answer an agent question | `POST /continue`                                                    | Resumes the paused agent loop                               |
 | Stop generation         | `POST /stop`                                                        | Cancels the browser stream and active project agent run     |
 
-Follow-up prompts use the same streaming agent endpoint. The preview iframe loads the backend-provided `http://project.tarun.co/workspace/<runtimeId>/` URL. The code pane and WebSocket-based file/status UI remain placeholders.
+Follow-up prompts use the same streaming agent endpoint. The preview iframe loads the backend-provided `http://project.tarun.co/workspace/<runtimeId>/` URL. The Code tab calls the authenticated file endpoint and displays text source files read from the same project PVC; the WebSocket-based live file/status channel remains a placeholder.
 
 ## 6. `apps/backend`: control plane
 
@@ -132,7 +132,7 @@ The backend is a Fastify server on port `3001`. Zod schemas provide request/resp
 | `POST /sendUserMessage`      | Cookie | Authorizes the project and proxies its agent SSE stream                 |
 | `POST /continue`             | Cookie | Authorizes the project and forwards an answer to a pending agent prompt |
 | `POST /stop`                 | Cookie | Authorizes the project and cancels its active generation                |
-| `GET /getServerFilesAndCode` | Cookie | Placeholder                                                            |
+| `GET /getServerFilesAndCode` | Cookie | Authorizes the project and proxies its generated source-file snapshot  |
 
 `/newChat` updates `Project.initialPrompt` and calls `spinupK8sResources(library, projectId)`. The subsequent agent request creates the conversation row, avoiding duplicate first-message storage. The Kubernetes helper keeps the raw database UUID separate and derives the runtime ID internally.
 
@@ -204,6 +204,7 @@ The Fastify server listens on port `3000` and exposes Scalar docs at `/reference
 | `POST /chat`            | Creates/reuses a `GeminiProvider` for `projectId` and streams agent events |
 | `POST /continue`        | Resolves a pending `takeUserInput` promise by UUID                         |
 | `POST /stop`            | Aborts the active model/tool loop for the configured project              |
+| `GET /files`            | Returns a bounded, secret-safe snapshot of generated text files           |
 | `POST /executeFncCalls` | Re-executes stored tool calls, including recorded worktree merges          |
 
 `/chat` emits standard `data: ...\n\n` SSE frames. The control-plane backend forwards this stream without buffering.
@@ -342,7 +343,7 @@ The active dynamic route shapes are intended to be:
 
 At any point after submission, Stop aborts the frontend request and the backend/agent cancellation chain. A run paused on `takeUserInput` is cancelled without requiring an answer.
 
-The browser-to-agent-to-preview path is connected. The WebSocket relay and code/file panel are still not connected to the UI.
+The browser-to-agent-to-preview path and read-only code/file panel are connected. The WebSocket relay is still not connected to the UI, so file changes refresh after generation or through the Code tab's refresh control rather than arriving as live filesystem events.
 
 ## 14. Runtime contracts
 
