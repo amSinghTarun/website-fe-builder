@@ -14,7 +14,13 @@ import {
   rejectSubAgent,
   resolveSubAgent,
 } from "../helper";
-import { summariseAgentPrompt, defaultSystemPrompt } from "../systemPrompts";
+import {
+  createFrontendSystemPrompt,
+  requiresWorkspaceMutation,
+  summariseAgentPrompt,
+  type FrontendLibrary,
+  workspaceCompletionAction,
+} from "../systemPrompts";
 import { prisma } from "@sky/db";
 import { normalizeToolResult } from "../types/tools";
 import {
@@ -32,6 +38,13 @@ import {
   throwIfRunCancelled,
 } from "../runtime/AgentRunRegistry";
 
+const implementationMutationTools = new Set([
+  "createFile",
+  "updateFile",
+  "deleteFile",
+  "waitForSubAgent",
+]);
+
 export class GeminiProvider {
   private static sessions: {
     [projectId: string]: { chat: Chat; contextualiseCount?: number };
@@ -46,14 +59,17 @@ export class GeminiProvider {
 
   private projectId: string = "";
   private sessionKey: string;
+  private frontendLibrary: FrontendLibrary;
 
   public constructor(
     projectId: string,
+    frontendLibrary: FrontendLibrary,
     systemPrompt?: string,
     cwd?: string,
     sessionKey?: string,
   ) {
     this.projectId = projectId;
+    this.frontendLibrary = frontendLibrary;
     this.sessionKey = sessionKey ?? projectId;
     this.cwd = cwd ?? "";
     if (!GeminiProvider.sessions[this.sessionKey])
@@ -71,7 +87,10 @@ export class GeminiProvider {
       model: "gemini-2.5-flash",
       history: args.history ?? [],
       config: {
-        systemInstruction: args.newSystemPrompt ?? defaultSystemPrompt,
+        systemInstruction: createFrontendSystemPrompt(
+          this.frontendLibrary,
+          args.newSystemPrompt,
+        ),
         toolConfig: {
           functionCallingConfig: {
             mode: FunctionCallingConfigMode.AUTO,
@@ -171,6 +190,10 @@ export class GeminiProvider {
       let activeTaskPlan: string[] | null = null;
       let completedTaskIds = new Set<string>();
       let runtimeTouched = false;
+      let workspaceChanged = false;
+      let noChangeRetries = 0;
+      const mutationRequired =
+        args.id === "1" && requiresWorkspaceMutation(args.message);
       const repairAttemptsByFingerprint = new Map<string, number>();
 
       const runtimeRepairMessage = (
@@ -272,9 +295,12 @@ export class GeminiProvider {
           break;
         }
 
+        hasToolCall = false;
+        let withheldTurnText = "";
+
         for await (let response of streamResponse) {
           throwIfRunCancelled(args.signal);
-          hasToolCall = false;
+          const responseText = response.text ?? "";
 
           if (response.functionCalls && response.functionCalls.length > 0) {
             let functionCallResponses: PartListUnion = [];
@@ -324,6 +350,18 @@ export class GeminiProvider {
                   runtimeDirtyThisBatch = true;
                   runtimeTouched = true;
                 }
+                const commandChangesDependencies =
+                  tool.declaration.name === "executeBash" &&
+                  /\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|uninstall)\b/i.test(
+                    String(functionCall.args?.fullCommand ?? ""),
+                  );
+                if (
+                  output.effects?.workspaceChanged &&
+                  (implementationMutationTools.has(tool.declaration.name!) ||
+                    commandChangesDependencies)
+                ) {
+                  workspaceChanged = true;
+                }
 
                 // Prisma Call Here for the calls of LLM
                 await prisma.conversationHistory.create({
@@ -350,6 +388,7 @@ export class GeminiProvider {
                   if (provisionOutput.workspacePath) {
                     let subAgentSession = new GeminiProvider(
                       this.projectId,
+                      this.frontendLibrary,
                       functionCall.args?.systemPrompt as string,
                       provisionOutput.workspacePath,
                       `${this.sessionKey}:agent:${functionCall.args?.id}`,
@@ -479,12 +518,18 @@ export class GeminiProvider {
             newMessage = functionCallResponses;
           }
 
-          args.handler.onChunk &&
-            args.handler.onChunk({
-              type: "message",
-              response: response.text,
-            });
-          summary += ` ${response.text ?? ""}`;
+          if (responseText) {
+            if (!mutationRequired || workspaceChanged) {
+              args.handler.onChunk?.({
+                type: "message",
+                response: responseText,
+              });
+              summary += ` ${responseText}`;
+            } else {
+              withheldTurnText += responseText;
+            }
+          }
+
         }
 
         throwIfRunCancelled(args.signal);
@@ -524,6 +569,43 @@ export class GeminiProvider {
             newMessage = [{ text: repairMessage }];
             hasToolCall = true;
           }
+        }
+
+        let rejectedProseCompletion = false;
+        const completionAction = mutationRequired
+          ? workspaceCompletionAction({
+              message: args.message,
+              workspaceChanged,
+              previousRetries: noChangeRetries,
+            })
+          : "accept";
+        if (!hasToolCall && completionAction !== "accept") {
+          rejectedProseCompletion = true;
+
+          if (completionAction === "fail") {
+            const errorMessage =
+              "The coding agent did not modify the frontend workspace after two retries.";
+            args.handler.onChunk?.({ type: "error", response: errorMessage });
+            throw new Error(errorMessage);
+          }
+
+          noChangeRetries += 1;
+          newMessage = [
+            {
+              text: `Your response was rejected because this is an implementation request and no workspace-changing tool succeeded. Do not provide a tutorial or source-code snippet. Inspect the existing ${this.frontendLibrary} project, modify its frontend files with tools, and verify the browser preview before responding.`,
+            },
+          ];
+          hasToolCall = true;
+        }
+
+        // Do not expose a tutorial-style answer that failed the implementation
+        // contract. Only stream text from a valid turn.
+        if (!rejectedProseCompletion && withheldTurnText) {
+          args.handler.onChunk?.({
+            type: "message",
+            response: withheldTurnText,
+          });
+          summary += ` ${withheldTurnText}`;
         }
       }
 

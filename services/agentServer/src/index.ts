@@ -10,7 +10,7 @@ import {
 import fastifySwagger from "@fastify/swagger";
 import scalar from "@scalar/fastify-api-reference";
 import { catchUserInputResolver } from "./helper";
-import { type ConversationHistory } from "@sky/db";
+import { prisma, type ConversationHistory } from "@sky/db";
 import { tools } from "./tools/index.js";
 import { normalizeToolResult } from "./types/tools.js";
 import { getConfiguredAppRuntimeMonitor } from "./runtime/index.js";
@@ -19,6 +19,7 @@ import {
   agentRunRegistry,
 } from "./runtime/AgentRunRegistry.js";
 import { listWorkspaceFiles } from "./runtime/workspaceFiles.js";
+import { parseFrontendLibrary } from "./systemPrompts/index.js";
 
 const app = Fastify().withTypeProvider<ZodTypeProvider>();
 const configuredDatabaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
@@ -100,9 +101,17 @@ app.post(
   async (request, reply) => {
     try {
       assertConfiguredProject(request.body.projectId);
+      const project = await prisma.project.findUnique({
+        where: { id: request.body.projectId },
+        select: { library: true },
+      });
+      if (!project) throw new Error("Project not found");
+
+      const frontendLibrary = parseFrontendLibrary(project.library);
       const runController = agentRunRegistry.start(request.body.projectId);
       let geminiAgent = new GeminiProvider(
         request.body.projectId,
+        frontendLibrary,
         undefined,
         workspacePath,
       );
