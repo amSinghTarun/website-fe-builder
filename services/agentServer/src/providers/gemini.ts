@@ -27,6 +27,7 @@ import {
   formatRuntimeObservation,
   getConfiguredAppRuntimeMonitor,
   type AppRuntimeState,
+  validateFrontendBuild,
 } from "../runtime";
 import {
   archiveLargeUpdateFileArguments,
@@ -138,16 +139,36 @@ export class GeminiProvider {
     return { contextedCount, history: contextualizedHistory };
   }
 
-  private async observeRuntime(handler: {
-    onChunk?: (chunk: { type: string; response: any; uuid?: string }) => void;
-  }): Promise<AppRuntimeState | undefined> {
+  private async observeRuntime(
+    handler: {
+      onChunk?: (chunk: { type: string; response: any; uuid?: string }) => void;
+    },
+    verifyBuild = false,
+    signal?: AbortSignal,
+  ): Promise<AppRuntimeState | undefined> {
     const configured = getConfiguredAppRuntimeMonitor();
 
     if (!configured || configured.ref.databaseProjectId !== this.projectId) {
       return undefined;
     }
 
-    const state = await configured.monitor.waitForSettledState(configured.ref);
+    let state = await configured.monitor.waitForSettledState(configured.ref);
+
+    // Vite can return a healthy HTML shell even when an imported JSX/TS module
+    // fails to compile. At completion, require a production build so the agent
+    // receives the actual compiler diagnostics and repairs the workspace.
+    if (verifyBuild && state.status === "running") {
+      state =
+        (await validateFrontendBuild({
+          databaseProjectId: this.projectId,
+          namespace: configured.ref.namespace,
+          containerName: configured.ref.containerName,
+          workingDirectory:
+            process.env["WORKSPACE_CONTAINER_PATH"]?.trim() || "/app/my-app",
+          signal,
+        })) ?? state;
+    }
+
     handler.onChunk?.({ type: "runtime", response: state });
     return state;
   }
@@ -557,7 +578,7 @@ export class GeminiProvider {
             if (args.id === "1" && runtimeDirtyThisBatch) {
               throwIfRunCancelled(args.signal);
               const runtimeState = await abortable(
-                this.observeRuntime(args.handler),
+                this.observeRuntime(args.handler, false, args.signal),
                 args.signal,
               );
               const repairMessage = runtimeRepairMessage(runtimeState, true);
@@ -612,7 +633,7 @@ export class GeminiProvider {
           hasToolCall = true;
         } else if (!hasToolCall && args.id === "1" && runtimeTouched) {
           const runtimeState = await abortable(
-            this.observeRuntime(args.handler),
+            this.observeRuntime(args.handler, true, args.signal),
             args.signal,
           );
 
