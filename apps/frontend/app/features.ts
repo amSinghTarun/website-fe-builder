@@ -1,81 +1,86 @@
 import {
-  Sparkles,
   Box,
   Users,
   ListChecks,
   Save,
-  GitBranch,
-  Cloud,
   Route,
-  ArrowDown,
   BrainCircuit,
   ScrollText,
+  Eye,
+  CheckCircle2,
 } from "lucide-react";
 
 export const features = [
   {
     icon: Box,
-    status: "ISOLATED",
-    title: "Kubernetes Pods",
-    description: "Every project runs in its own pod — no noisy neighbors.",
-    detail: "Auto-scaled · isolated namespace",
+    status: "DEDICATED",
+    title: "Kubernetes Runtime",
+    description:
+      "Every project gets dedicated workspace, agent and recovery workloads.",
+    detail: "Shared namespace · project-scoped services",
   },
   {
-    icon: Users,
-    status: "PARALLEL",
-    title: "Sub-Agents",
-    description: "Specialized agents split the work and run it side by side.",
-    detail: "Up to 6 agents per build",
+    icon: Save,
+    status: "RESTORABLE",
+    title: "Project Recovery",
+    description:
+      "Resume a saved project with its code, conversation and runtime restored.",
+    detail: "PVC · GCS snapshots · tool replay",
+  },
+  {
+    icon: Eye,
+    status: "LIVE",
+    title: "Live Preview & Source",
+    description:
+      "See the running frontend and browse its generated files in one editor.",
+    detail: "Readiness-gated iframe · file browser",
   },
   {
     icon: ListChecks,
     status: "ORDERED",
     title: "Task Planning",
-    description: "Your prompt becomes a dependency-ordered build plan first.",
-    detail: "DAG-based dependency graph",
+    description:
+      "Substantive builds are broken into clear outcomes before implementation.",
+    detail: "3–6 ordered execution steps",
   },
   {
     icon: BrainCircuit,
     status: "AWARE",
     title: "Contextualisation",
     description:
-      "Reads your existing codebase and conventions before writing a line.",
-    detail: "Full-repo context retrieval",
+      "Uses the existing frontend workspace and saved conversation while coding.",
+    detail: "Workspace-aware prompting",
   },
   {
     icon: ScrollText,
     status: "CONDENSED",
     title: "Summarisation",
     description:
-      "Long threads and files get condensed so agents never lose the plot.",
-    detail: "Auto-compacts context window",
+      "Large tool payloads are archived so long builds retain useful context.",
+    detail: "Context archives · compact history",
+  },
+  {
+    icon: Users,
+    status: "BRANCHED",
+    title: "Sub-Agents & Worktrees",
+    description:
+      "Independent tasks can run in isolated Git branches and worktrees.",
+    detail: "One branch and worktree per sub-agent",
+  },
+  {
+    icon: CheckCircle2,
+    status: "VERIFIED",
+    title: "Runtime Validation",
+    description:
+      "The production build and live workspace are checked before completion.",
+    detail: "Build diagnostics · health monitoring",
   },
   {
     icon: Route,
     status: "ROUTED",
-    title: "Dynamic Reverse Proxy",
-    description: "Nginx routes every request to the right pod by project URL.",
-    detail: "Zero-downtime hot reload",
-  },
-  {
-    icon: Save,
-    status: "CONTINUOUS",
-    title: "Auto Backup",
-    description: "Every change is snapshotted automatically as you build.",
-    detail: "Snapshot on every commit",
-  },
-  {
-    icon: GitBranch,
-    status: "BRANCHED",
-    title: "Worktrees",
-    description: "Every agent gets its own worktree — nothing to stash.",
-    detail: "One worktree per branch",
-  },
-  {
-    icon: Cloud,
-    status: "SYNCED",
-    title: "Cloud Storage",
-    description: "Your code lives in durable cloud storage, always reachable.",
-    detail: "S3-compatible object store",
+    title: "Dynamic Nginx Routing",
+    description:
+      "Ingress and Nginx route each preview path to the correct workspace.",
+    detail: "Per-project service routing",
   },
 ];
