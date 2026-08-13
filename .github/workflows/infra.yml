@@ -91,11 +91,18 @@ jobs:
 
       - name: Pin application images to this commit
         run: |
+          kubectl set env deployment/sky-backend RUNTIME_IMAGE_TAG=${{ github.event.workflow_run.head_sha }}
           kubectl set image deployment/sky-backend backend=tarunsingh28/sky-backend:${{ github.event.workflow_run.head_sha }}
           kubectl set image deployment/sky-frontend frontend=tarunsingh28/sky-frontend:${{ github.event.workflow_run.head_sha }}
 
       - name: Refresh existing project services
         run: |
+          pin_to_workspace_node() {
+            deployment="$1"
+            runtime_id="$2"
+            kubectl patch "$deployment" --type=merge -p "{\"spec\":{\"template\":{\"spec\":{\"affinity\":{\"podAffinity\":{\"requiredDuringSchedulingIgnoredDuringExecution\":[{\"labelSelector\":{\"matchLabels\":{\"app\":\"${runtime_id}-workspace\"}},\"topologyKey\":\"kubernetes.io/hostname\"}]}}}}}}"
+          }
+
           # Both proxies mount ConfigMap files via subPath and need an explicit
           # restart to observe configuration changes.
           kubectl rollout restart deployment/dynamic-nginx deployment/nginx-proxy
@@ -103,12 +110,36 @@ jobs:
           for deployment in $(kubectl get deployment -o name); do
             case "$deployment" in
               *-agent-deployment)
+                runtime_id="${deployment#deployment.apps/}"
+                runtime_id="${runtime_id%-agent-deployment}"
+                pin_to_workspace_node "$deployment" "$runtime_id"
+                kubectl set image "$deployment" "${runtime_id}-agent=tarunsingh28/sky-agent:${{ github.event.workflow_run.head_sha }}"
                 kubectl set env "$deployment" \
                   CONTEXT_ARCHIVE_PATH=/user-app/.sky-agent-context \
                   WORKSPACE_CONTAINER_PATH=/app/my-app
+                kubectl set resources "$deployment" \
+                  --requests=cpu=250m,memory=256Mi \
+                  --limits=cpu=1,memory=2Gi
                 kubectl rollout restart "$deployment"
                 ;;
-              *-recovery|*-recovery-cron-deployment|*-ws-server-deployment)
+              *-recovery)
+                runtime_id="${deployment#deployment.apps/}"
+                runtime_id="${runtime_id%-recovery}"
+                pin_to_workspace_node "$deployment" "$runtime_id"
+                kubectl set image "$deployment" "${runtime_id}-recovery-cron=tarunsingh28/sky-recovery-cron:${{ github.event.workflow_run.head_sha }}"
+                kubectl rollout restart "$deployment"
+                ;;
+              *-recovery-cron-deployment)
+                runtime_id="${deployment#deployment.apps/}"
+                runtime_id="${runtime_id%-recovery-cron-deployment}"
+                pin_to_workspace_node "$deployment" "$runtime_id"
+                kubectl set image "$deployment" "${runtime_id}-recovery-cron=tarunsingh28/sky-recovery-cron:${{ github.event.workflow_run.head_sha }}"
+                kubectl rollout restart "$deployment"
+                ;;
+              *-ws-server-deployment)
+                runtime_id="${deployment#deployment.apps/}"
+                runtime_id="${runtime_id%-ws-server-deployment}"
+                kubectl set image "$deployment" "${runtime_id}-ws-server=tarunsingh28/sky-ws-server:${{ github.event.workflow_run.head_sha }}"
                 kubectl rollout restart "$deployment"
                 ;;
             esac

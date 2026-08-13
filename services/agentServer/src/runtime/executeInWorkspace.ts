@@ -1,5 +1,4 @@
-import { CoreV1Api, Exec, KubeConfig } from "@kubernetes/client-node";
-import { PassThrough } from "node:stream";
+import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
 import { toRuntimeId } from "@sky/runtime-id";
 import {
   AgentRunCancelledError,
@@ -9,7 +8,6 @@ import {
 
 type WorkspaceExecDependencies = {
   coreApi: Pick<CoreV1Api, "listNamespacedPod">;
-  execClient: Pick<Exec, "exec">;
 };
 
 let dependencies: WorkspaceExecDependencies | undefined;
@@ -26,7 +24,6 @@ function getDependencies(): WorkspaceExecDependencies {
 
   dependencies = {
     coreApi: kubeConfig.makeApiClient(CoreV1Api),
-    execClient: new Exec(kubeConfig),
   };
   return dependencies;
 }
@@ -48,7 +45,7 @@ export async function executeInWorkspace(
   throwIfRunCancelled(options.signal);
   const runtimeId = toRuntimeId(options.databaseProjectId);
   const namespace = options.namespace ?? "default";
-  const { coreApi, execClient } = getDependencies();
+  const { coreApi } = getDependencies();
   const pods = await coreApi.listNamespacedPod({
     namespace,
     labelSelector: `app=${runtimeId}-workspace`,
@@ -61,40 +58,41 @@ export async function executeInWorkspace(
     throw new Error("The project workspace pod is not running");
   }
 
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const chunks: Buffer[] = [];
-  stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-  stderr.on("data", (chunk: Buffer) => chunks.push(chunk));
-
-  let exitCode = 1;
-  let settleStatus: (() => void) | undefined;
-  const statusReceived = new Promise<void>((resolve) => {
-    settleStatus = resolve;
-  });
   const workingDirectory = options.workingDirectory ?? "/app/my-app";
-  const socket = await execClient.exec(
-    namespace,
-    pod.metadata.name,
-    options.containerName ?? "node",
-    ["/bin/sh", "-lc", `cd ${shellQuote(workingDirectory)} && ${command}`],
-    stdout,
-    stderr,
-    null,
-    false,
-    (status) => {
-      exitCode = status.status === "Success" ? 0 : 1;
-      settleStatus?.();
-    },
+  const child = Bun.spawn(
+    [
+      "kubectl",
+      "exec",
+      "--namespace",
+      namespace,
+      pod.metadata.name,
+      "--container",
+      options.containerName ?? "node",
+      "--",
+      "/bin/sh",
+      "-lc",
+      `cd ${shellQuote(workingDirectory)} && ${command}`,
+    ],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   );
+  const output = Promise.all([
+    new Response(child.stdout).arrayBuffer(),
+    new Response(child.stderr).arrayBuffer(),
+  ]);
 
-  const onAbort = () => socket.close();
+  const onAbort = () => child.kill("SIGTERM");
   options.signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    await abortable(statusReceived, options.signal);
+    const exitCode = await abortable(child.exited, options.signal);
     throwIfRunCancelled(options.signal);
-    return { output: Buffer.concat(chunks).toString("utf-8"), exitCode };
+    const chunks = await output;
+    return {
+      output: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+        "utf-8",
+      ),
+      exitCode,
+    };
   } catch (error) {
     if (options.signal?.aborted) throw new AgentRunCancelledError();
     throw error;

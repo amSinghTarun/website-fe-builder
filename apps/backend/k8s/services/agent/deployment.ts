@@ -1,4 +1,6 @@
 import { toRuntimeId } from "@sky/runtime-id";
+import { workspacePodAffinity } from "../../workspace-affinity";
+import { runtimeImage } from "../../runtime-image";
 
 // env variables needed
 // database url - constant
@@ -36,6 +38,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
         },
         spec: {
           serviceAccountName: "k8s-service-account",
+          affinity: workspacePodAffinity(runtimeId),
           initContainers: [
             {
               name: "wait-for-workspace",
@@ -60,7 +63,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
           containers: [
             {
               name: `${runtimeId}-agent`,
-              image: `tarunsingh28/sky-agent`,
+              image: runtimeImage("tarunsingh28/sky-agent"),
               imagePullPolicy: "Always",
               ports: [{ containerPort: 3000 }],
               readinessProbe: {
@@ -76,7 +79,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                 timeoutSeconds: 2,
               },
               resources: {
-                requests: { cpu: "250m", memory: "512Mi" },
+                requests: { cpu: "250m", memory: "256Mi" },
                 limits: { cpu: "1", memory: "2Gi" },
               },
               env: [

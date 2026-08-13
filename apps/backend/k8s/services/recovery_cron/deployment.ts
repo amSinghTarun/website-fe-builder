@@ -1,4 +1,6 @@
 import { toRuntimeId } from "@sky/runtime-id";
+import { workspacePodAffinity } from "../../workspace-affinity";
+import { runtimeImage } from "../../runtime-image";
 
 export const recoveryDeploymentSpec = (databaseProjectId: string) => {
   const runtimeId = toRuntimeId(databaseProjectId);
@@ -30,10 +32,11 @@ export const recoveryDeploymentSpec = (databaseProjectId: string) => {
         },
         spec: {
           serviceAccountName: "k8s-service-account",
+          affinity: workspacePodAffinity(runtimeId),
           containers: [
             {
               name: `${runtimeId}-recovery-cron`,
-              image: `tarunsingh28/sky-recovery-cron`,
+              image: runtimeImage("tarunsingh28/sky-recovery-cron"),
               imagePullPolicy: "Always",
               resources: {
                 requests: { cpu: "100m", memory: "256Mi" },

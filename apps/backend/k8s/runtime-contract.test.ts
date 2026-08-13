@@ -75,10 +75,20 @@ describe("per-project runtime contract", () => {
     expect(deployment.spec.strategy).toEqual({ type: "Recreate" });
     expect(container.resources.requests).toEqual({
       cpu: "250m",
-      memory: "512Mi",
+      memory: "256Mi",
     });
+    expect(container.image).toBe("tarunsingh28/sky-agent:latest");
     expect(deployment.spec.template.spec.initContainers[0]?.resources.requests)
       .toEqual({ cpu: "50m", memory: "64Mi" });
+    expect(
+      deployment.spec.template.spec.affinity.podAffinity
+        .requiredDuringSchedulingIgnoredDuringExecution[0],
+    ).toMatchObject({
+      labelSelector: {
+        matchLabels: { app: `${runtimeId}-workspace` },
+      },
+      topologyKey: "kubernetes.io/hostname",
+    });
 
     const service = agentServiceSpec(databaseProjectId);
     expect(service.metadata.name).toBe(`${runtimeId}-agent-service`);
@@ -101,7 +111,17 @@ describe("per-project runtime contract", () => {
       memory: "256Mi",
     });
     expect(environment.DATABASE_PROJECT_ID).toBe(databaseProjectId);
+    expect(container.image).toBe("tarunsingh28/sky-recovery-cron:latest");
     expect(environment).not.toHaveProperty("RUNTIME_ID");
+    expect(
+      deployment.spec.template.spec.affinity.podAffinity
+        .requiredDuringSchedulingIgnoredDuringExecution[0],
+    ).toMatchObject({
+      labelSelector: {
+        matchLabels: { app: `${runtimeId}-workspace` },
+      },
+      topologyKey: "kubernetes.io/hostname",
+    });
   });
 
   test("every Kubernetes builder derives the runtime ID exactly once", () => {
@@ -112,6 +132,9 @@ describe("per-project runtime contract", () => {
     expect(pvc.metadata.name).toBe(`${runtimeId}-pvc`);
     expect(websocketDeployment.metadata.name).toBe(
       `${runtimeId}-ws-server-deployment`,
+    );
+    expect(websocketDeployment.spec.template.spec.containers[0]?.image).toBe(
+      "tarunsingh28/sky-ws-server:latest",
     );
     expect(websocketService.metadata.name).toBe(
       `${runtimeId}-ws-server-service`,
@@ -138,6 +161,29 @@ describe("per-project runtime contract", () => {
     for (const name of deploymentNames) {
       expect(name.length).toBeLessThanOrEqual(63);
       expect(name).toMatch(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
+    }
+  });
+
+  test("pins generated services to the deployment commit when configured", () => {
+    const previousTag = process.env.RUNTIME_IMAGE_TAG;
+    process.env.RUNTIME_IMAGE_TAG = "commit-sha";
+
+    try {
+      expect(
+        agentDeploymentSpec(databaseProjectId).spec.template.spec.containers[0]
+          ?.image,
+      ).toBe("tarunsingh28/sky-agent:commit-sha");
+      expect(
+        recoveryDeploymentSpec(databaseProjectId).spec.template.spec
+          .containers[0]?.image,
+      ).toBe("tarunsingh28/sky-recovery-cron:commit-sha");
+      expect(
+        wsServerDeploymentSpec(databaseProjectId).spec.template.spec
+          .containers[0]?.image,
+      ).toBe("tarunsingh28/sky-ws-server:commit-sha");
+    } finally {
+      if (previousTag == null) delete process.env.RUNTIME_IMAGE_TAG;
+      else process.env.RUNTIME_IMAGE_TAG = previousTag;
     }
   });
 });

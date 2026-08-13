@@ -1,4 +1,8 @@
+FROM registry.k8s.io/kubectl:v1.35.6 AS kubectl
+
 FROM oven/bun:1
+
+COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git \

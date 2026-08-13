@@ -40,6 +40,8 @@ spec:
                 secretKeyRef:
                   name: sky-secrets
                   key: GCP_PROJECT_ID
+            - name: RUNTIME_IMAGE_TAG
+              value: latest
             - name: PROJECTS_BASE_URL
               value: http://project.tarun.co
             - name: CORS_ORIGINS

@@ -1,4 +1,5 @@
 import { toRuntimeId } from "@sky/runtime-id";
+import { runtimeImage } from "../../runtime-image";
 
 export const wsServerDeploymentSpec = (databaseProjectId: string) => {
   const runtimeId = toRuntimeId(databaseProjectId);
@@ -30,7 +31,7 @@ export const wsServerDeploymentSpec = (databaseProjectId: string) => {
           containers: [
             {
               name: `${runtimeId}-ws-server`,
-              image: "tarunsingh28/sky-ws-server",
+              image: runtimeImage("tarunsingh28/sky-ws-server"),
               imagePullPolicy: "Always",
               ports: [{ containerPort: 8080 }],
               resources: {
