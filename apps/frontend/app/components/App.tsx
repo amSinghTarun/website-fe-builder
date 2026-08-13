@@ -24,29 +24,11 @@ import {
   type AgentActivityState,
   type AgentStreamEvent,
 } from "../functions/agentActivity";
-
-type ConversationType = string; // narrow this to your actual enum if exported
-type MessageFrom = "USER" | "ASSISTANT";
-
-type ChatRecord = {
-  id: number;
-  projectId: string;
-  contents: string;
-  type: ConversationType;
-  from: MessageFrom;
-  output: string | null;
-  toolCall: unknown | null;
-  completed: boolean | null;
-  snapshotCaptured: boolean | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type ChatMessage = {
-  id: string;
-  from: "user" | "assistant";
-  message: string;
-};
+import {
+  mapChatHistory,
+  type ChatMessage,
+  type PersistedChatRecord,
+} from "../functions/chatHistory";
 
 type PendingAgentInput = {
   uuid: string;
@@ -76,11 +58,17 @@ export function App() {
   const [loadingName, setLoadingName] = useState(false);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyLoad, setHistoryLoad] = useState<{
+    projectId: string | null;
+    status: "loading" | "loaded" | "error";
+  }>({ projectId: null, status: "loading" });
+  const historyStatus =
+    historyLoad.projectId === projectId ? historyLoad.status : "loading";
   const [message, setMessage] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [agentActivity, setAgentActivity] =
     useState<AgentActivityState>(emptyAgentActivity);
   const [pendingAgentInput, setPendingAgentInput] =
@@ -130,20 +118,17 @@ export function App() {
     }
   }, [projectId]);
 
-  // Resolve project name (URL param, or look up from /projects when resuming)
+  // Always load project metadata. The URL can provide a name immediately, but
+  // only the API knows whether this project already has a preview runtime.
   useEffect(() => {
-    if (nameFromUrl) {
-      setResolvedName(nameFromUrl);
-      return;
-    }
     if (!projectId) return;
 
     let cancelled = false;
 
-    const fetchProjectName = async () => {
+    const fetchProject = async () => {
       setLoadingName(true);
+      if (nameFromUrl) setResolvedName(nameFromUrl);
       try {
-        // TODO: swap for GET /projects/:id once available
         const res = await fetch(apiUrl("/projects"), {
           credentials: "include",
         });
@@ -151,12 +136,19 @@ export function App() {
 
         const json = await res.json();
         const match = (json.data ?? []).find(
-          (p: { id: string; title: string; workspaceUrl?: string }) =>
+          (p: {
+            id: string;
+            title: string;
+            initialPrompt?: string | null;
+            workspaceUrl?: string;
+          }) =>
             p.id === projectId
         );
         if (!cancelled) {
           setResolvedName(match ? match.title : null);
-          setPreviewUrl(match?.workspaceUrl ?? null);
+          setPreviewUrl(
+            match?.initialPrompt ? (match.workspaceUrl ?? null) : null,
+          );
         }
       } catch (err: unknown) {
         if (!cancelled) {
@@ -168,7 +160,7 @@ export function App() {
       }
     };
 
-    fetchProjectName();
+    void fetchProject();
     return () => {
       cancelled = true;
     };
@@ -181,7 +173,8 @@ export function App() {
     let cancelled = false;
 
     const fetchHistory = async () => {
-      setLoadingHistory(true);
+      setMessages([]);
+      setHistoryLoad({ projectId, status: "loading" });
       try {
         const res = await fetch(
           apiUrl(`/chat?projectId=${encodeURIComponent(projectId)}`),
@@ -194,40 +187,18 @@ export function App() {
         }
 
         const json = await res.json();
-        const records: ChatRecord[] = json.data ?? [];
+        const records: PersistedChatRecord[] = json.data ?? [];
 
-        const sorted = [...records].sort(
-          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
-
-        const mapped: ChatMessage[] = sorted.flatMap((record) => {
-          const entries: ChatMessage[] = [
-            {
-              id: String(record.id),
-              from: record.from === "USER" ? "user" : "assistant",
-              message: record.contents,
-            },
-          ];
-
-          if (record.from === "USER" && record.output?.trim()) {
-            entries.push({
-              id: `${record.id}-output`,
-              from: "assistant",
-              message: record.output.trim(),
-            });
-          }
-
-          return entries;
-        });
-
-        if (!cancelled) setMessages(mapped);
+        if (!cancelled) {
+          setMessages(mapChatHistory(records));
+          setHistoryLoad({ projectId, status: "loaded" });
+        }
       } catch (err: unknown) {
         if (!cancelled) {
+          setHistoryLoad({ projectId, status: "error" });
           const msg = err instanceof Error ? err.message : "Unknown error";
           toast.error(msg);
         }
-      } finally {
-        if (!cancelled) setLoadingHistory(false);
       }
     };
 
@@ -254,7 +225,7 @@ export function App() {
     }
   }, [activeTab, isGenerating, loadProjectFiles]);
 
-  const isFirstMessage = messages.length === 0;
+  const isFirstMessage = historyStatus === "loaded" && messages.length === 0;
   const selectedFile =
     projectFiles.find((file) => file.path === selectedFilePath) ?? null;
 
@@ -318,6 +289,16 @@ export function App() {
         setAgentActivity((previous) => reduceAgentActivity(previous, chunk));
       }
 
+      if (
+        chunk.type === "runtime" &&
+        chunk.response &&
+        typeof chunk.response === "object" &&
+        "status" in chunk.response &&
+        chunk.response.status === "running"
+      ) {
+        setPreviewRevision((current) => current + 1);
+      }
+
       if (chunk.type === "askInput" && chunk.uuid) {
         const questions = parseAgentQuestions(chunk.response);
         if (questions.length > 0) {
@@ -367,6 +348,11 @@ export function App() {
     const trimmed = text.trim();
     if (!trimmed || isGenerating) return;
 
+    if (historyStatus !== "loaded") {
+      toast.error("Wait for the saved conversation to finish loading.");
+      return;
+    }
+
     if (!projectId) {
       toast.error("Missing project — go back and start or resume a project first.");
       return;
@@ -409,6 +395,7 @@ export function App() {
 
       if (stopRequestedRef.current) return;
       await streamAgentMessage(trimmed, generationController.signal);
+      setPreviewRevision((current) => current + 1);
     } catch (err: unknown) {
       if (stopRequestedRef.current || generationController.signal.aborted) return;
       const errMessage = err instanceof Error ? err.message : "Something went wrong";
@@ -553,13 +540,19 @@ export function App() {
             </div>
 
             <div ref={scrollRef} className="h-full flex-1 flex flex-col gap-2 overflow-y-auto">
-              {loadingHistory && (
+              {historyStatus === "loading" && (
                 <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm gap-2">
                   <Loader2 size={14} className="animate-spin" /> Loading conversation...
                 </div>
               )}
 
-              {!loadingHistory && messages.length === 0 && !isGenerating && (
+              {historyStatus === "error" && (
+                <div className="flex-1 flex items-center justify-center px-6 text-center text-sm text-red-400">
+                  The saved conversation could not be loaded. Reopen the project to retry.
+                </div>
+              )}
+
+              {historyStatus === "loaded" && messages.length === 0 && !isGenerating && (
                 <div className="flex-1 flex flex-col justify-center gap-3">
                   <p className="text-zinc-600 text-xs uppercase tracking-[0.2em] mb-1">
                     Try something like
@@ -576,7 +569,7 @@ export function App() {
                 </div>
               )}
 
-              {!loadingHistory &&
+              {historyStatus === "loaded" &&
                 messages.map((m) =>
                   m.from === "user" ? (
                     <div key={m.id} className="w-full flex justify-end">
@@ -690,7 +683,7 @@ export function App() {
                 onChange={(e) => setMessage(e.target.value)}
                 className="flex-1 p-2 outline-none bg-transparent text-sm"
                 placeholder="Type a message..."
-                disabled={isGenerating}
+                disabled={isGenerating || historyStatus !== "loaded"}
               />
               {isGenerating ? (
                 <button
@@ -709,7 +702,7 @@ export function App() {
               ) : (
                 <button
                   type="submit"
-                  disabled={!message.trim()}
+                  disabled={!message.trim() || historyStatus !== "loaded"}
                   className="px-3 text-cyan-300 disabled:text-zinc-700 disabled:cursor-not-allowed"
                 >
                   →
@@ -750,6 +743,16 @@ export function App() {
                     className={loadingFiles ? "animate-spin" : ""}
                   />
                   Refresh files
+                </button>
+              )}
+              {activeTab === "preview" && previewUrl && (
+                <button
+                  type="button"
+                  onClick={() => setPreviewRevision((current) => current + 1)}
+                  className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-zinc-500 transition hover:text-cyan-300"
+                >
+                  <RefreshCw size={13} />
+                  Refresh preview
                 </button>
               )}
             </div>
@@ -806,17 +809,18 @@ export function App() {
                     </section>
                   </div>
                 )
-              ) : messages.length === 0 ? (
-                <div className="text-center text-zinc-600 text-sm">
-                  <Sparkles className="mx-auto mb-3 text-zinc-700" size={24} />
-                  Your app will appear here once you send a prompt.
-                </div>
               ) : previewUrl ? (
                 <iframe
+                  key={`${previewUrl}-${previewRevision}`}
                   title="app-preview"
                   className="w-full h-full rounded-b-lg bg-white"
                   src={previewUrl}
                 />
+              ) : historyStatus === "loaded" && messages.length === 0 ? (
+                <div className="text-center text-zinc-600 text-sm">
+                  <Sparkles className="mx-auto mb-3 text-zinc-700" size={24} />
+                  Your app will appear here once you send a prompt.
+                </div>
               ) : (
                 <div className="text-center text-zinc-600 text-sm">
                   The preview will appear when the project runtime is ready.

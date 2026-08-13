@@ -391,9 +391,7 @@ app.get(
     },
   },
   async (request, reply) => {
-    console.log(request.query.projectId);
-
-    let chatHistory = await prisma.conversationHistory.findMany({
+    const chatHistory = await prisma.conversationHistory.findMany({
       where: {
         projectId: request.query.projectId as string,
         type: "TEXT_MESSAGE",
@@ -401,7 +399,6 @@ app.get(
       },
       orderBy: { id: "asc" },
     });
-    console.log(chatHistory);
     return reply.code(200).send({
       status: "success",
       message: "chat of specified project",
