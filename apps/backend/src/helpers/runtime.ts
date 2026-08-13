@@ -24,9 +24,11 @@ type RuntimeFetcher = (
 async function isReachable(
   url: string,
   fetcher: RuntimeFetcher,
+  init?: RequestInit,
 ): Promise<boolean> {
   try {
     const response = await fetcher(url, {
+      ...init,
       signal: AbortSignal.timeout(2_000),
     });
     return response.ok;
@@ -44,6 +46,7 @@ export async function getProjectRuntimeStatus(
     isReachable(
       `http://${routes.runtimeId}-workspace-service.default.svc.cluster.local:5173${routes.workspacePath}`,
       fetcher,
+      { headers: { Host: new URL(projectsBaseUrl).host } },
     ),
     isReachable(
       `http://${routes.runtimeId}-agent-service.default.svc.cluster.local:3000/health`,

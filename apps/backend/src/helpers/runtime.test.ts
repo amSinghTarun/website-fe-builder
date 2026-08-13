@@ -21,8 +21,10 @@ describe("project runtime", () => {
 
   test("reports ready only after both workspace and agent answer successfully", async () => {
     const calls: string[] = [];
-    const fetcher = async (input: string) => {
+    const requestHeaders: Array<RequestInit["headers"]> = [];
+    const fetcher = async (input: string, init?: RequestInit) => {
       calls.push(String(input));
+      requestHeaders.push(init?.headers);
       return new Response(null, {
         status: String(input).includes("workspace-service") ? 200 : 503,
       });
@@ -33,6 +35,7 @@ describe("project runtime", () => {
     expect(starting.workspaceReady).toBe(true);
     expect(starting.agentReady).toBe(false);
     expect(calls).toHaveLength(2);
+    expect(requestHeaders[0]).toEqual({ Host: "project.tarun.co" });
 
     const ready = await getProjectRuntimeStatus(
       databaseProjectId,
