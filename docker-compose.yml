@@ -16,14 +16,6 @@ services:
       timeout: 2s 
       retries: 5
 
-  ws-server:
-    build: 
-      context: ./
-      dockerfile: ./services/wsServer/Dockerfile
-    restart: always
-    ports:
-      - 8080:8080
-
   migration:
     build:
       context: .

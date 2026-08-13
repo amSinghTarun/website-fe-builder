@@ -5,8 +5,6 @@ import { agentServiceSpec } from "./services/agent/service";
 import { recoveryDeploymentSpec } from "./services/recovery_cron/deployment";
 import { workspaceDeploymentSpec } from "./services/workspace/deployment";
 import { workspaceServiceSpec } from "./services/workspace/service";
-import { wsServerDeploymentSpec } from "./services/wsServer/deployment";
-import { wsServerServiceSpec } from "./services/wsServer/service";
 
 const databaseProjectId = "database-id";
 const runtimeId = `sky-${databaseProjectId}`;
@@ -126,27 +124,9 @@ describe("per-project runtime contract", () => {
 
   test("every Kubernetes builder derives the runtime ID exactly once", () => {
     const pvc = getPvcSpec(databaseProjectId);
-    const websocketDeployment = wsServerDeploymentSpec(databaseProjectId);
-    const websocketService = wsServerServiceSpec(databaseProjectId);
 
     expect(pvc.metadata.name).toBe(`${runtimeId}-pvc`);
-    expect(websocketDeployment.metadata.name).toBe(
-      `${runtimeId}-ws-server-deployment`,
-    );
-    expect(websocketDeployment.spec.template.spec.containers[0]?.image).toBe(
-      "tarunsingh28/sky-ws-server:latest",
-    );
-    expect(websocketService.metadata.name).toBe(
-      `${runtimeId}-ws-server-service`,
-    );
-
-    for (const name of [
-      pvc.metadata.name,
-      websocketDeployment.metadata.name,
-      websocketService.metadata.name,
-    ]) {
-      expect(name.startsWith("sky-sky-")).toBe(false);
-    }
+    expect(pvc.metadata.name.startsWith("sky-sky-")).toBe(false);
   });
 
   test("deployment names remain valid for database UUID project IDs", () => {
@@ -154,7 +134,6 @@ describe("per-project runtime contract", () => {
     const deploymentNames = [
       workspaceDeploymentSpec("react", uuid).metadata.name,
       recoveryDeploymentSpec(uuid).metadata.name,
-      wsServerDeploymentSpec(uuid).metadata.name,
       agentDeploymentSpec(uuid).metadata.name,
     ];
 
@@ -177,10 +156,6 @@ describe("per-project runtime contract", () => {
         recoveryDeploymentSpec(databaseProjectId).spec.template.spec
           .containers[0]?.image,
       ).toBe("tarunsingh28/sky-recovery-cron:commit-sha");
-      expect(
-        wsServerDeploymentSpec(databaseProjectId).spec.template.spec
-          .containers[0]?.image,
-      ).toBe("tarunsingh28/sky-ws-server:commit-sha");
     } finally {
       if (previousTag == null) delete process.env.RUNTIME_IMAGE_TAG;
       else process.env.RUNTIME_IMAGE_TAG = previousTag;

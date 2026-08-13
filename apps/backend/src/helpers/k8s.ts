@@ -95,17 +95,11 @@ export const spinupK8sResources = async (
   const recovery_cron = await applyDeployment(
     k8sConfs.recoveryDeploymentSpec(databaseProjectId),
   );
-  const ws = await applyDeployment(
-    k8sConfs.wsServerDeploymentSpec(databaseProjectId),
-  );
   const agent = await applyDeployment(
     k8sConfs.agentDeploymentSpec(databaseProjectId),
   );
 
   // create services
-  const wsServerClusterIpService = await applyService(
-    k8sConfs.wsServerServiceSpec(databaseProjectId),
-  );
   const agentClusterIpService = await applyService(
     k8sConfs.agentServiceSpec(databaseProjectId),
   );
@@ -117,7 +111,6 @@ export const spinupK8sResources = async (
     runtimeId,
     agentService: `${runtimeId}-agent-service`,
     workspaceService: `${runtimeId}-workspace-service`,
-    wsService: `${runtimeId}-ws-server-service`,
   };
 };
 

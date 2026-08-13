@@ -95,6 +95,17 @@ jobs:
           kubectl set image deployment/sky-backend backend=tarunsingh28/sky-backend:${{ github.event.workflow_run.head_sha }}
           kubectl set image deployment/sky-frontend frontend=tarunsingh28/sky-frontend:${{ github.event.workflow_run.head_sha }}
 
+      - name: Remove retired project WebSocket relays
+        run: |
+          for deployment in $(kubectl get deployment -l sky.dev/component=websocket -o name); do
+            kubectl delete "$deployment"
+          done
+          for service in $(kubectl get service -o name); do
+            case "$service" in
+              *-ws-server-service) kubectl delete "$service" ;;
+            esac
+          done
+
       - name: Refresh existing project services
         run: |
           pin_to_workspace_node() {
@@ -134,12 +145,6 @@ jobs:
                 runtime_id="${runtime_id%-recovery-cron-deployment}"
                 pin_to_workspace_node "$deployment" "$runtime_id"
                 kubectl set image "$deployment" "${runtime_id}-recovery-cron=tarunsingh28/sky-recovery-cron:${{ github.event.workflow_run.head_sha }}"
-                kubectl rollout restart "$deployment"
-                ;;
-              *-ws-server-deployment)
-                runtime_id="${deployment#deployment.apps/}"
-                runtime_id="${runtime_id%-ws-server-deployment}"
-                kubectl set image "$deployment" "${runtime_id}-ws-server=tarunsingh28/sky-ws-server:${{ github.event.workflow_run.head_sha }}"
                 kubectl rollout restart "$deployment"
                 ;;
             esac

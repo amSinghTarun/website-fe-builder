@@ -35,17 +35,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       
-      - name: Build and push wsServer
-        uses: docker/build-push-action@v7
-        with:
-          # file	String	Path to the Dockerfile. (default {context}/Dockerfile)
-          context: .
-          file: ./services/wsServer/Dockerfile
-          push: true
-          tags: |
-            tarunsingh28/sky-ws-server:latest
-            tarunsingh28/sky-ws-server:${{ github.sha }}
-
       - name: Build and push agent
         uses: docker/build-push-action@v7
         with:

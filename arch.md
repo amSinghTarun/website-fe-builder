@@ -2,7 +2,7 @@
 
 ## 1. What this repository is
 
-SKY is a prototype AI application builder. A user signs in, creates a React or Vue project, and submits an initial prompt. The control-plane backend records that project and is intended to create a dedicated Kubernetes runtime for it. That runtime contains a Vite development server, a Gemini-powered coding agent, a WebSocket relay, and a recovery/backup worker around one shared persistent volume.
+SKY is a prototype AI application builder. A user signs in, creates a React or Vue project, and submits an initial prompt. The control-plane backend records that project and creates a dedicated Kubernetes runtime for it. That runtime contains a Vite development server, a Gemini-powered coding agent, and a recovery/backup worker around one shared persistent volume.
 
 This is a Bun workspaces monorepo. The root `package.json` includes `apps/*`, `packages/*`, and `services/*`. Most server-side code runs on Bun and TypeScript; the frontend is the exception and uses React Router's Node/Vite toolchain.
 
@@ -16,7 +16,6 @@ The repository currently contains both working pieces and partially connected in
 | `apps/backend`                | Public control-plane API, authentication, project metadata, and per-project Kubernetes provisioning | `src/index.ts`                  | `@sky/db`, PostgreSQL, Kubernetes API                          |
 | `packages/db`                 | Shared Prisma schema, generated client, and PostgreSQL adapter                                      | `prisma.ts`                     | PostgreSQL                                                     |
 | `services/agentServer`        | Per-project Gemini coding-agent API and tool runtime                                                | `src/index.ts`                  | Vertex AI Gemini, `@sky/db`, project filesystem, Git           |
-| `services/wsServer`           | Per-project WebSocket echo/broadcast server                                                         | `index.ts`                      | WebSocket clients                                              |
 | `services/recovery_cron`      | Per-project snapshot and replay worker                                                              | `src/index.ts`                  | `@sky/db`, Google Cloud Storage, agent API, project filesystem |
 | `services/_workspace_runtine` | Superseded image for creating and running a Vite project                                            | `entrypoint.sh`                 | npm/Vite, project filesystem                                   |
 | `infra`                       | Cluster-level PostgreSQL, proxies, services, and deployment manifests                               | YAML manifests                  | GKE/Kubernetes, Nginx                                          |
@@ -39,7 +38,6 @@ flowchart LR
     subgraph ProjectRuntime["Per-project Kubernetes runtime"]
         Workspace["Vite workspace"]
         Agent["Gemini agent server"]
-        WS["WebSocket relay"]
         Recovery["Recovery and backup worker"]
         PVC[("Project PVC")]
         Workspace --- PVC
@@ -56,10 +54,9 @@ flowchart LR
     Backend --> DB
     Backend --> K8s
     K8s --> ProjectRuntime
-    Frontend -. "project API, preview, WebSocket" .-> DynamicProxy
+    Frontend -. "project API and preview" .-> DynamicProxy
     DynamicProxy --> Agent
     DynamicProxy --> Workspace
-    DynamicProxy --> WS
     Agent --> DB
     Agent --> Vertex
     Recovery --> DB
@@ -106,7 +103,7 @@ Browser API calls use the same-origin `/api` prefix and include credentials so t
 | Answer an agent question | `POST /continue`                                                    | Resumes the paused agent loop                               |
 | Stop generation         | `POST /stop`                                                        | Cancels the browser stream and active project agent run     |
 
-Follow-up prompts use the same streaming agent endpoint. The preview iframe loads the backend-provided `http://project.tarun.co/workspace/<runtimeId>/` URL. The Code tab calls the authenticated file endpoint and displays text source files read from the same project PVC; the WebSocket-based live file/status channel remains a placeholder.
+Follow-up prompts use the same SSE agent endpoint. The preview iframe loads the backend-provided `http://project.tarun.co/workspace/<runtimeId>/` URL. The Code tab calls the authenticated file endpoint and displays text source files read from the same project PVC. Plans, questions, runtime state, and transient tool activity all travel through the active SSE response.
 
 ## 6. `apps/backend`: control plane
 
@@ -141,8 +138,8 @@ The backend is a Fastify server on port `3001`. Zod schemas provide request/resp
 `src/helpers/k8s.ts` uses in-cluster credentials in Kubernetes and the default kubeconfig locally, then creates these resources in the `default` namespace:
 
 1. One 500 Mi `ReadWriteOnce` PVC.
-2. Workspace, recovery, WebSocket, and agent Deployments.
-3. Workspace, WebSocket, and agent ClusterIP Services.
+2. Workspace, recovery, and agent Deployments.
+3. Workspace and agent ClusterIP Services.
 
 The TypeScript manifest builders live under `apps/backend/k8s`. Every builder accepts the raw `databaseProjectId` and derives its Kubernetes prefix with `toRuntimeId`; callers never pass a prefixed ID into a manifest builder. Every resource is therefore prefixed exactly once with `sky-<database project UUID>`. The workspace initializes `my-app` from the chosen Vite template and mounts the PVC at `/app`. The agent and recovery pods mount the same PVC at `/user-app`. The recovery and agent pods use `k8s-service-account`; their database and GCP project values come from the `sky-secrets` Kubernetes Secret.
 
@@ -250,11 +247,11 @@ File tools continue to use the agent pod's `/user-app/my-app` PVC mount. Shell c
 
 `src/agent.ts` is an obsolete, fully commented version of the agent wrapper; the active implementation is `providers/gemini.ts`.
 
-## 9. `services/wsServer`: WebSocket relay
+## 9. Real-time browser transport
 
-This service runs a `ws` `WebSocketServer` on port `8080`. A new connection receives a welcome JSON object. Every received message is converted to text and broadcast to every open client as `Echo: <message>`.
+Agent output uses one authenticated Server-Sent Events response from `POST /sendUserMessage`. Text, plans, runtime health, input requests, stop/error events, and transient tool summaries share that stream. There is no separate per-project WebSocket relay.
 
-It currently has no project protocol, authentication, agent integration, filesystem watcher, or status-event producer. Isolation is expected to come from deploying one server per project, but the frontend does not yet connect to it.
+The generated Vite preview still uses its own development-server WebSocket for hot-module replacement. Dynamic Nginx therefore keeps upgrade headers on `/workspace/<runtimeId>/`; those headers are unrelated to SKY's agent event transport.
 
 ## 10. `services/recovery_cron`: snapshots and replay
 
@@ -288,14 +285,14 @@ The directory name itself contains the historical typo `_workspace_runtine`; wor
 
 ### Local Docker Compose
 
-`docker-compose.yml` starts PostgreSQL, a migration job, WebSocket server, recovery worker, agent server, and backend. It does not start the frontend or per-project Vite workspace, and it does not reproduce dynamic project routing. Ports exposed to the host are PostgreSQL `5432`, WebSocket `8080`, agent `3000`, and backend `3001`.
+`docker-compose.yml` starts PostgreSQL, a migration job, recovery worker, agent server, and backend. It does not start the frontend or per-project Vite workspace, and it does not reproduce dynamic project routing. Ports exposed to the host are PostgreSQL `5432`, agent `3000`, and backend `3001`.
 
 ### Cluster-level manifests
 
 - `infra/pvc.yml` creates a 2 Gi `sky-pvc` for platform PostgreSQL data.
 - `infra/postgres.yml` deploys PostgreSQL 16 and exposes `postgres-service:5432`.
 - `infra/ingress.yml` is actually a public Nginx ConfigMap/Deployment/LoadBalancer service, not a Kubernetes `Ingress`. It routes `sky.traun.co`, `api.tarun.co`, and `project.tarun.co` to the frontend, backend, and dynamic proxy Services.
-- `infra/dynamic_nginx/deployment.yml` runs internal Nginx on `nginx-custom:8080`. It extracts a project key from the URL and dynamically resolves agent, workspace, or WebSocket Kubernetes DNS names. The deployment workflow restarts both proxy Deployments after applying their ConfigMaps because their configuration files are mounted with `subPath`.
+- `infra/dynamic_nginx/deployment.yml` runs internal Nginx on `nginx-custom:8080`. It extracts a project key from the URL and dynamically resolves agent or workspace Kubernetes DNS names. The deployment workflow restarts both proxy Deployments after applying their ConfigMaps because their configuration files are mounted with `subPath`.
 - `infra/apps/backend.yml` and `infra/apps/frontend.yml` contain the shared application Deployments and Services.
 - `infra/dynamic_nginx/_nginx.conf` and `_ingress.yml` are older routing sketches retained for reference.
 
@@ -305,11 +302,10 @@ The active dynamic route shapes are intended to be:
 | ----------------------------- | --------------------------------------------- |
 | `/agent/<project>/<rest>`     | Project agent HTTP API                        |
 | `/workspace/<project>/<rest>` | Project Vite dev server                       |
-| `/ws/<project>`               | Project WebSocket server with upgrade headers |
 
 ### CI/CD and identity
 
-`.github/workflows/services.yml` builds and pushes the agent, recovery, WebSocket, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies platform/application manifests, pins shared and existing per-project workloads to the immutable commit SHA, refreshes existing project services, waits for rollouts, and applies pending Prisma migrations. The backend receives that SHA as `RUNTIME_IMAGE_TAG`, so newly created project Deployments use the same immutable agent/recovery/WebSocket images instead of depending on mutable `latest` resolution. If the GitHub `JWT_SECRET` is unset, the workflow preserves the cluster's current value or generates one only for a new cluster; a stable GitHub secret is still recommended for disaster recovery. Runtime Roles and RoleBindings are a cluster bootstrap prerequisite: apply `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml` once with a cluster-admin context, and apply them again whenever their rules change. The regular deployment identity intentionally does not manage RBAC.
+`.github/workflows/services.yml` builds and pushes the agent, recovery, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies platform/application manifests, removes retired WebSocket relay resources, pins shared and existing per-project workloads to the immutable commit SHA, refreshes existing project services, waits for rollouts, and applies pending Prisma migrations. The backend receives that SHA as `RUNTIME_IMAGE_TAG`, so newly created project Deployments use the same immutable agent/recovery images instead of depending on mutable `latest` resolution. If the GitHub `JWT_SECRET` is unset, the workflow preserves the cluster's current value or generates one only for a new cluster; a stable GitHub secret is still recommended for disaster recovery. Runtime Roles and RoleBindings are a cluster bootstrap prerequisite: apply `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml` once with a cluster-admin context, and apply them again whenever their rules change. The regular deployment identity intentionally does not manage RBAC.
 
 `setup_workload_identity.sh` creates `k8s-service-account` and grants its direct GKE workload principal Vertex AI User on the project plus object-admin/bucket-reader access scoped to `lovable_backup_snapshots`. Per-project agent and recovery pods reference that Kubernetes account so Google client libraries can use short-lived Application Default Credentials without embedded keys.
 
@@ -327,7 +323,7 @@ The active dynamic route shapes are intended to be:
 
 1. The builder calls `/newChat` with the raw database project UUID.
 2. The backend stores `Project.initialPrompt` and provisions the runtime; the agent stores the conversation row when streaming begins.
-3. The backend prefixes the UUID with `sky-` and creates the per-project PVC, four Deployments, and three Services.
+3. The backend derives the `sky-<UUID>` runtime ID and creates the per-project PVC, three Deployments, and two Services.
 4. The workspace pod installs Git, Python 3/pip, creates `my-app`, installs dependencies, and runs Vite.
 5. The frontend calls `/sendUserMessage`; the backend waits for the agent Service, forwards SSE events, and the iframe uses the returned workspace URL.
 
@@ -338,12 +334,12 @@ The active dynamic route shapes are intended to be:
 3. File tools use the shared PVC through the agent mount; shell tools execute inside the workspace container, and every call is recorded in PostgreSQL.
 4. Plan, user-input, and sub-agent events stream to the caller.
 5. Sub-agents work on separate Git branches/worktrees; completed branches merge into the main project tree.
-6. Vite observes filesystem changes and refreshes the preview; WebSocket/status channels notify the browser.
+6. Vite observes filesystem changes and refreshes the preview; agent status and tool events reach the browser over SSE.
 7. The recovery worker snapshots the updated volume.
 
 At any point after submission, Stop aborts the frontend request and the backend/agent cancellation chain. A run paused on `takeUserInput` is cancelled without requiring an answer.
 
-The browser-to-agent-to-preview path and read-only code/file panel are connected. The WebSocket relay is still not connected to the UI, so file changes refresh after generation or through the Code tab's refresh control rather than arriving as live filesystem events.
+The browser-to-agent-to-preview path and read-only code/file panel are connected. File changes reach Vite through the shared volume; the iframe hot-reloads through Vite HMR, while the Code tab refreshes after generation or through its refresh control.
 
 ## 14. Runtime contracts
 
@@ -365,7 +361,6 @@ The browser-to-agent-to-preview path and read-only code/file panel are connected
 | Frontend      | Dev `5173`; production `3000`                   | Deployment and Service use `3000`                               | None                                                           |
 | Backend       | `3001`                                          | Deployment and Service use `3001`                               | PostgreSQL only                                                |
 | Agent         | `PORT`, default `3000`                          | Generated Deployment/Service use `3000`                         | PVC mounted at `/user-app`; tools rooted at `/user-app/my-app` |
-| WebSocket     | `8080`                                          | `8080`                                                          | None                                                           |
 | Workspace     | Vite `5173`                                     | Deployment and Service use `5173` with startup/readiness probes | PVC mounted at `/app`; application at `/app/my-app`            |
 | Recovery      | No listener                                     | No Service needed                                               | PVC mounted at `/user-app`                                     |
 | Dynamic Nginx | `8080`                                          | `nginx-custom:8080`                                             | ConfigMap only                                                 |
@@ -375,7 +370,7 @@ The browser-to-agent-to-preview path and read-only code/file panel are connected
 
 These are important when reasoning about the repository as it exists today:
 
-1. **The file/code UI remains unfinished.** Agent streaming and preview are connected, but generated files are not returned to the code panel and the WebSocket relay is unused.
+1. **The generated-file panel is read-only.** It displays project source from the agent file endpoint, but browser-side editing is not implemented.
 2. **Assistant transcript storage is asymmetric.** The agent stores generated text in the user run's `output`; the frontend reconstructs that output as an assistant message instead of using a separate assistant database row.
 3. **Kubernetes provisioning has no rollback or cleanup.** Repeating `/newChat` reconciles named resources, but a failed partial creation is not rolled back and abandoned projects are not garbage-collected.
 4. **A `ReadWriteOnce` PVC is shared across three Deployments.** This depends on the storage class and pod scheduling; it is not a portable multi-node sharing model.
@@ -396,7 +391,7 @@ These are important when reasoning about the repository as it exists today:
 | Change LLM/session behavior            | `services/agentServer/src/providers/gemini.ts`, `src/systemPrompts/*`                                 |
 | Change project routing                 | `infra/dynamic_nginx/deployment.yml` and generated Service names/ports                                |
 | Change backup/recovery                 | `services/recovery_cron/src/service/*`, `src/storage/gcp.ts`                                          |
-| Connect live UI events                 | `apps/frontend/app/components/App.tsx`, agent streaming endpoint, and/or `services/wsServer/index.ts` |
+| Change live UI events                  | `apps/frontend/app/components/App.tsx`, agent SSE stream, and `services/agentServer/src/providers/gemini.ts` |
 | Change cluster deployment              | `infra/**`, `.github/workflows/infra.yml`, `.github/workflows/services.yml`                           |
 
 ## 17. Architectural summary
@@ -449,7 +444,7 @@ The implementation first had to fix these repository contracts:
 | Agent workspace path | The PVC is mounted at `/user-app`, and Vite's project is `/user-app/my-app`, but `new GeminiProvider(projectId)` sets `cwd` to an empty string.                                                                                     | Set `WORKSPACE_PATH=/user-app/my-app` and construct the main provider with that path. Runtime checks are meaningless if tools edit the agent image instead of the shared application volume.                                                                                          |
 | Workspace startup    | The generated shell command starts continuation lines with `&&` after `fi`; `sh -n` reports a syntax error.                                                                                                                         | Use a valid `set -e; ...; cd /app/my-app; npm install; exec npm run dev -- --host 0.0.0.0` script.                                                                                                                                                                                    |
 | Workspace port       | Vite listens on `5173`, but the generated Service exposes `3000` and targets `8080`.                                                                                                                                                | Expose Service port `5173` with `targetPort: 5173`.                                                                                                                                                                                                                                   |
-| Service discovery    | The backend creates `*-workspace-service`, `*-agent-service`, and `*-ws-server-service`; dynamic Nginx currently resolves names without `-service`.                                                                                 | Choose one naming contract and use it everywhere. The least disruptive choice is to retain the backend names and make Nginx and internal callers include `-service`.                                                                                                                  |
+| Service discovery    | The backend creates `*-workspace-service` and `*-agent-service`; dynamic Nginx originally resolved names without `-service`.                                                                                                      | Keep one naming contract everywhere: Nginx and internal callers resolve the Service names including `-service`.                                                                                                                                                                      |
 | Agent port           | Agent source listened on `3000`, while its generated Deployment and Service used `3001`; the `PORT` environment variable was ignored.                                                                                               | Standardize the source, Deployment, Service, and `PORT` environment variable on `3000`.                                                                                                                                                                                               |
 | Kubernetes access    | `k8s-service-account` is configured for GCP Workload Identity only. No Kubernetes Role grants pod/log reads or workspace execution.                                                                                                | Add namespace-scoped RBAC for `get/list` on pods, `get` on `pods/log`, and `create` on `pods/exec`. Workload Identity and Kubernetes RBAC are separate permission systems.                                                                                                             |
 | Agent dependency     | `@kubernetes/client-node` is installed only in `apps/backend`.                                                                                                                                                                      | Add it directly to `services/agentServer/package.json`; do not rely on workspace hoisting.                                                                                                                                                                                            |

@@ -37,7 +37,6 @@ function projectRuntimeRoutes(databaseProjectId: string) {
     agentPath: `/agent/${runtimeId}`,
     workspacePath,
     workspaceUrl: `${projectsBaseUrl}${workspacePath}`,
-    websocketPath: `/ws/${runtimeId}`,
   };
 }
 
