@@ -73,6 +73,28 @@ async function openAgentStream(
   throw new Error(`Unable to reach the project agent: ${lastError}`);
 }
 
+async function continueAgent(
+  databaseProjectId: string,
+  uuid: string,
+  message: string,
+): Promise<void> {
+  const runtimeId = toRuntimeId(databaseProjectId);
+  const response = await fetch(
+    `http://${runtimeId}-agent-service.default.svc.cluster.local:3000/continue`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: databaseProjectId, uuid, message }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Agent rejected the response (${response.status}): ${await response.text()}`,
+    );
+  }
+}
+
 const app = fastify({
   logger: true,
 }).withTypeProvider<ZodTypeProvider>();
@@ -449,6 +471,43 @@ app.post(
       .header("Cache-Control", "no-cache")
       .header("X-Accel-Buffering", "no")
       .send(Readable.fromWeb(agentResponse.body as any));
+  },
+);
+
+app.post(
+  "/continue",
+  {
+    onRequest: checkAuth,
+    schema: {
+      body: z.object({
+        projectId: z.string(),
+        uuid: z.string().min(1),
+        message: z.string().min(1),
+      }),
+    },
+  },
+  async (request, reply) => {
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.body.projectId,
+        userId: request.userId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
+    }
+
+    await continueAgent(project.id, request.body.uuid, request.body.message);
+
+    return reply.code(200).send({
+      status: "success",
+      message: "Response sent to agent",
+    });
   },
 );
 

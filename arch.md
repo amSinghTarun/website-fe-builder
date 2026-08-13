@@ -236,6 +236,8 @@ The main agent now runs with `/user-app/my-app` as its tool root. Tools return a
 
 Large historical `updateFile` arguments are compacted into content-addressed artifacts under `/user-app/.sky-agent-context/<runtimeId>/` on the project PVC. Context compaction clones Gemini history before replacing large arguments with artifact references, so the canonical tool-call objects are never mutated. A read-only `readContextArtifact` tool can retrieve an archived value by its SHA-256 artifact ID. `updateFile` rejects both these references and the legacy `/root/.loveable-contest` placeholders, preventing context metadata from being written into application source.
 
+When the agent emits an `askInput` SSE event, the frontend renders each question as an inline response form while keeping the original generation stream open. The authenticated backend `/continue` route verifies project ownership and forwards the combined answers to the project agent's `/continue` resolver. Public Nginx permits the paused SSE request to remain open for up to one hour.
+
 `src/agent.ts` is an obsolete, fully commented version of the agent wrapper; the active implementation is `providers/gemini.ts`.
 
 ## 9. `services/wsServer`: WebSocket relay

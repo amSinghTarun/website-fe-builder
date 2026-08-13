@@ -15,7 +15,9 @@ import { apiUrl } from "../config";
 import { createClientId } from "../functions/clientId";
 import {
   emptyAgentActivity,
+  parseAgentQuestions,
   reduceAgentActivity,
+  type AgentQuestion,
   type AgentActivityState,
   type AgentStreamEvent,
 } from "../functions/agentActivity";
@@ -43,6 +45,11 @@ type ChatMessage = {
   message: string;
 };
 
+type PendingAgentInput = {
+  uuid: string;
+  questions: AgentQuestion[];
+};
+
 const SUGGESTIONS = [
   "A kanban board with drag and drop",
   "A landing page for a coffee subscription",
@@ -67,6 +74,10 @@ export function App() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [agentActivity, setAgentActivity] =
     useState<AgentActivityState>(emptyAgentActivity);
+  const [pendingAgentInput, setPendingAgentInput] =
+    useState<PendingAgentInput | null>(null);
+  const [agentAnswers, setAgentAnswers] = useState<Record<string, string>>({});
+  const [submittingAgentInput, setSubmittingAgentInput] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -179,7 +190,7 @@ export function App() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, isGenerating]);
+  }, [messages, isGenerating, pendingAgentInput]);
 
   const isFirstMessage = messages.length === 0;
 
@@ -241,6 +252,16 @@ export function App() {
         setAgentActivity((previous) => reduceAgentActivity(previous, chunk));
       }
 
+      if (chunk.type === "askInput" && chunk.uuid) {
+        const questions = parseAgentQuestions(chunk.response);
+        if (questions.length > 0) {
+          setPendingAgentInput({ uuid: chunk.uuid, questions });
+          setAgentAnswers(
+            Object.fromEntries(questions.map((question) => [question.id, ""])),
+          );
+        }
+      }
+
       if (chunk.type === "error") {
         streamError =
           typeof chunk.response === "string"
@@ -291,6 +312,8 @@ export function App() {
 
     setMessages((prev) => [...prev, userMessage]);
     setAgentActivity(emptyAgentActivity);
+    setPendingAgentInput(null);
+    setAgentAnswers({});
     setMessage("");
     setIsGenerating(true);
 
@@ -315,6 +338,8 @@ export function App() {
       await streamAgentMessage(trimmed);
     } catch (err: unknown) {
       const errMessage = err instanceof Error ? err.message : "Something went wrong";
+      setPendingAgentInput(null);
+      setAgentAnswers({});
       toast.error(errMessage);
     } finally {
       setIsGenerating(false);
@@ -324,6 +349,60 @@ export function App() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     sendPrompt(message);
+  };
+
+  const submitAgentInput = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!projectId || !pendingAgentInput || submittingAgentInput) return;
+
+    const unanswered = pendingAgentInput.questions.some(
+      (question) => !agentAnswers[question.id]?.trim(),
+    );
+    if (unanswered) {
+      toast.error("Please answer every question before continuing.");
+      return;
+    }
+
+    const answer = pendingAgentInput.questions
+      .map((question) => `${question.id}: ${agentAnswers[question.id]!.trim()}`)
+      .join("\n");
+    const requestUuid = pendingAgentInput.uuid;
+
+    setSubmittingAgentInput(true);
+    try {
+      const response = await fetch(apiUrl("/continue"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          uuid: requestUuid,
+          message: answer,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Unable to send your response");
+      }
+
+      setPendingAgentInput(null);
+      setAgentAnswers({});
+      setAgentActivity((previous) => ({
+        ...previous,
+        items: previous.items.map((item) =>
+          item.id === `question-${requestUuid}`
+            ? { ...item, label: "Your response was sent to the agent", status: "complete" }
+            : item,
+        ),
+      }));
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to send your response",
+      );
+    } finally {
+      setSubmittingAgentInput(false);
+    }
   };
 
   return (
@@ -429,6 +508,54 @@ export function App() {
                     ))}
                   </div>
                 </div>
+              )}
+
+              {pendingAgentInput && (
+                <form
+                  onSubmit={submitAgentInput}
+                  className="w-full rounded-lg border border-cyan-400/40 bg-cyan-400/5 p-3"
+                >
+                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-300">
+                    Agent needs your input
+                  </p>
+                  <div className="flex flex-col gap-3">
+                    {pendingAgentInput.questions.map((question) => (
+                      <label key={question.id} className="flex flex-col gap-1.5">
+                        <span className="text-xs leading-4 text-zinc-300">
+                          {question.question}
+                        </span>
+                        <textarea
+                          value={agentAnswers[question.id] ?? ""}
+                          onChange={(event) =>
+                            setAgentAnswers((previous) => ({
+                              ...previous,
+                              [question.id]: event.target.value,
+                            }))
+                          }
+                          rows={2}
+                          disabled={submittingAgentInput}
+                          className="resize-y rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-xs text-white outline-none transition focus:border-cyan-300 disabled:opacity-50"
+                          placeholder="Type your answer..."
+                        />
+                      </label>
+                    ))}
+                    <button
+                      type="submit"
+                      disabled={
+                        submittingAgentInput ||
+                        pendingAgentInput.questions.some(
+                          (question) => !agentAnswers[question.id]?.trim(),
+                        )
+                      }
+                      className="flex items-center justify-center gap-2 rounded-md border border-cyan-300 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-300 hover:text-black disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-cyan-300"
+                    >
+                      {submittingAgentInput && (
+                        <Loader2 size={13} className="animate-spin" />
+                      )}
+                      Send response
+                    </button>
+                  </div>
+                </form>
               )}
 
               {isGenerating && (

@@ -4,6 +4,11 @@ export type AgentStreamEvent = {
   uuid?: string;
 };
 
+export type AgentQuestion = {
+  id: string;
+  question: string;
+};
+
 export type AgentActivityStatus = "active" | "complete" | "error";
 
 export type AgentActivityItem = {
@@ -31,6 +36,33 @@ function responseText(response: unknown): string {
   } catch {
     return String(response);
   }
+}
+
+export function parseAgentQuestions(response: unknown): AgentQuestion[] {
+  const value =
+    response && typeof response === "object" && !Array.isArray(response)
+      ? (response as Record<string, unknown>).questions ?? response
+      : response;
+  const entries = Array.isArray(value) ? value : [value];
+
+  return entries.flatMap((entry, index) => {
+    if (typeof entry === "string" && entry.trim()) {
+      return [{ id: `question-${index + 1}`, question: entry.trim() }];
+    }
+
+    if (!entry || typeof entry !== "object") return [];
+
+    const question = entry as Record<string, unknown>;
+    const text = responseText(question.question).trim();
+    if (!text) return [];
+
+    return [
+      {
+        id: responseText(question.id).trim() || `question-${index + 1}`,
+        question: text,
+      },
+    ];
+  });
 }
 
 function planItems(response: unknown): Array<{ id: string; task: string }> {
@@ -180,11 +212,15 @@ export function reduceAgentActivity(
   }
 
   if (event.type === "askInput") {
+    const questions = parseAgentQuestions(event.response);
     return {
       ...state,
       items: upsert(state.items, {
         id: `question-${event.uuid ?? "current"}`,
-        label: `Agent needs input: ${responseText(event.response)}`,
+        label:
+          questions.length === 1
+            ? `Waiting for your response: ${questions[0]!.question}`
+            : `Waiting for your responses to ${questions.length} questions`,
         status: "active",
       }),
     };

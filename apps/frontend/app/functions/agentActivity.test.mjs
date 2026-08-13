@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   emptyAgentActivity,
+  parseAgentQuestions,
   reduceAgentActivity,
 } from "./agentActivity.ts";
 
@@ -52,6 +53,26 @@ describe("agent activity stream", () => {
       id: "agent-error",
       label: "Vertex quota exceeded",
       status: "error",
+    });
+  });
+
+  test("parses agent questions and shows a waiting activity", () => {
+    const response = [
+      { id: "framework", question: "Which framework should I use?" },
+      { id: "theme", question: "Which theme do you prefer?" },
+    ];
+
+    expect(parseAgentQuestions(response)).toEqual(response);
+    expect(
+      reduceAgentActivity(emptyAgentActivity, {
+        type: "askInput",
+        uuid: "request-id",
+        response,
+      }).items[0],
+    ).toEqual({
+      id: "question-request-id",
+      label: "Waiting for your responses to 2 questions",
+      status: "active",
     });
   });
 });

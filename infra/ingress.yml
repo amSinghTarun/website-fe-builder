@@ -11,8 +11,9 @@ data:
 
       location /api/ {
         proxy_buffering off;
-        proxy_read_timeout 180s;
-        proxy_send_timeout 180s;
+        # The agent may pause its SSE stream while waiting for user input.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
         proxy_pass http://backend-service.default.svc.cluster.local:3001/;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
