@@ -103,6 +103,22 @@ export function reviewFrontendQuality(
     );
   }
 
+  const firstResponsiveBreakpoint = styles.search(
+    /@media\s*\([^)]*(?:min|max)-width/i,
+  );
+  const firstHorizontalRail = styles.search(/overflow-x\s*:\s*auto/i);
+  const fixedWidthRail =
+    firstHorizontalRail >= 0 &&
+    /(?:flex-shrink\s*:\s*0|min-width\s*:\s*\d+(?:px|rem))/i.test(styles);
+  if (
+    fixedWidthRail &&
+    (firstResponsiveBreakpoint < 0 || firstHorizontalRail < firstResponsiveBreakpoint)
+  ) {
+    issues.push(
+      "Make primary desktop content fit its available width; move fixed-width horizontal rails behind a narrow-screen breakpoint.",
+    );
+  }
+
   return { passed: issues.length === 0, issues };
 }
 

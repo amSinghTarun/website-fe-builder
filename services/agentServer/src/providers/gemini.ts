@@ -608,15 +608,10 @@ export class GeminiProvider {
           }
 
           if (responseText) {
-            if (!mutationRequired || workspaceChanged) {
-              args.handler.onChunk?.({
-                type: "message",
-                response: responseText,
-              });
-              summary += ` ${responseText}`;
-            } else {
-              withheldTurnText += responseText;
-            }
+            // A model turn can include both prose and function calls. Keep that
+            // intermediate narration out of chat; tool activity already shows
+            // progress. Only expose prose from the accepted terminal turn.
+            withheldTurnText += responseText;
           }
 
         }
@@ -693,7 +688,7 @@ export class GeminiProvider {
 
         // Do not expose a tutorial-style answer that failed the implementation
         // contract. Only stream text from a valid turn.
-        if (!rejectedProseCompletion && withheldTurnText) {
+        if (!rejectedProseCompletion && !hasToolCall && withheldTurnText) {
           args.handler.onChunk?.({
             type: "message",
             response: withheldTurnText,

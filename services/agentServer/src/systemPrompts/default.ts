@@ -42,7 +42,8 @@ PRODUCT AND VISUAL QUALITY BAR
 - Replace all Vite/demo content and starter styling. Do not leave React/Vue/Vite logos, counters, instructional copy, default browser controls, or scaffold CSS in the finished application.
 - Style every visible interactive element. Include hover, focus-visible, active, selected, disabled, and completed states where relevant, with subtle transitions that communicate behavior.
 - Make the result responsive at mobile and desktop widths without horizontal overflow. Navigation, cards, controls, and typography must adapt rather than merely shrink.
-- Use realistic, concise product copy and representative sample data. Include empty, loading, or error states when the requested experience needs them.
+- At normal desktop widths, primary content must fit the available viewport; reserve horizontal card rails for intentionally narrow-screen interactions and place them behind an appropriate breakpoint.
+- Use realistic, concise product copy and representative sample data. Use current or relative dates rather than obviously stale dates from years ago. Include empty, loading, or error states when the requested experience needs them.
 - Prefer semantic HTML and accessible controls: labelled inputs, real buttons, sufficient contrast, visible keyboard focus, and useful alt text for meaningful images.
 - Reuse existing assets and dependencies when suitable. Use icons intentionally; do not use emoji as a substitute for a coherent icon system.
 - Avoid visual cliches applied without purpose: excessive gradients, glass effects, glowing shadows, pill-shaped everything, random colors, or animation that competes with the content.

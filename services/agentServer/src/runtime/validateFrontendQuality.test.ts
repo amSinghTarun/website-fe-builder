@@ -49,4 +49,28 @@ describe("reviewFrontendQuality", () => {
 
     expect(review).toEqual({ passed: true, issues: [] });
   });
+
+  test("rejects a fixed-width horizontal rail at desktop widths", () => {
+    const styles = `
+      :root { --surface: white; }
+      .shell { display: grid; grid-template-columns: 15rem 1fr; }
+      .board { display: flex; overflow-x: auto; gap: 1rem; }
+      .column { min-width: 20rem; flex-shrink: 0; background: var(--surface); }
+      button { transition: transform .2s ease; }
+      button:hover { transform: translateY(-1px); }
+      button:focus-visible { outline: 2px solid blue; }
+      @media (max-width: 48rem) { .shell { grid-template-columns: 1fr; } }
+    `.repeat(3);
+    const review = reviewFrontendQuality([
+      file("package.json", '{"dependencies":{"react":"latest"}}'),
+      file(
+        "src/App.jsx",
+        "export default function App(){ return <main className='shell'><section className='board'><article className='column'/><button>Task</button></section></main> }",
+      ),
+      file("src/App.css", styles),
+    ]);
+
+    expect(review.passed).toBe(false);
+    expect(review.issues.join(" ")).toContain("desktop content");
+  });
 });
