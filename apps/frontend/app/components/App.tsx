@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { apiUrl } from "../config";
+import { createClientId } from "../functions/clientId";
 
 type ConversationType = string; // narrow this to your actual enum if exported
 type MessageFrom = "USER" | "ASSISTANT";
@@ -181,7 +182,7 @@ export function App() {
 
     if (!response.body) throw new Error("The project agent returned no stream");
 
-    const assistantId = crypto.randomUUID();
+    const assistantId = createClientId();
     let assistantStarted = false;
     let buffer = "";
     const reader = response.body.getReader();
@@ -257,7 +258,7 @@ export function App() {
     }
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: createClientId(),
       from: "user",
       message: trimmed,
     };
