@@ -5,6 +5,7 @@ import {
 } from "@google/genai";
 
 const implementationToolNames = new Set([
+  "createTaskPlan",
   "readDirectory",
   "readFileContent",
   "readContextArtifact",
@@ -18,6 +19,7 @@ export function createGeminiGenerationConfig(args: {
   systemInstruction: string;
   functionDeclarations: FunctionDeclaration[];
   abortSignal?: AbortSignal;
+  requireTaskPlan?: boolean;
   requireWorkspaceTool?: boolean;
 }): GenerateContentConfig {
   const allowedFunctionNames = args.functionDeclarations.flatMap(
@@ -28,16 +30,21 @@ export function createGeminiGenerationConfig(args: {
   );
   const requireWorkspaceTool =
     args.requireWorkspaceTool === true && allowedFunctionNames.length > 0;
+  const requireTaskPlan =
+    args.requireTaskPlan === true &&
+    allowedFunctionNames.includes("createTaskPlan");
 
   return {
     systemInstruction: args.systemInstruction,
     tools: [{ functionDeclarations: args.functionDeclarations }],
     toolConfig: {
       functionCallingConfig: {
-        mode: requireWorkspaceTool
+        mode: requireTaskPlan || requireWorkspaceTool
           ? FunctionCallingConfigMode.ANY
           : FunctionCallingConfigMode.AUTO,
-        ...(requireWorkspaceTool && { allowedFunctionNames }),
+        ...(requireTaskPlan
+          ? { allowedFunctionNames: ["createTaskPlan"] }
+          : requireWorkspaceTool && { allowedFunctionNames }),
       },
     },
     ...(args.abortSignal && { abortSignal: args.abortSignal }),

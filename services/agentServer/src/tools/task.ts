@@ -12,25 +12,34 @@ export const taskTool = {
         type: "object",
         properties: {
           taskList: {
-            type: "OBJECT",
+            type: "array",
             description:
-              "object of the sub-task in which the main task has been broken into",
-            properties: {
-              id: {
-                id: "STRING",
-                description: "id of the task",
+              "Three to six outcome-oriented implementation steps in execution order.",
+            minItems: 3,
+            maxItems: 6,
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Stable short identifier for the step.",
+                },
+                task: {
+                  type: "string",
+                  description: "Concrete implementation outcome for the step.",
+                },
               },
-              task: {
-                id: "STRING",
-                description: "the actaul subtask",
-              },
+              required: ["id", "task"],
             },
           },
         },
         required: ["taskList"],
       },
     } as FunctionDeclaration,
-    executable: (args: { taskList: string[] }, _context: { cwd: string }) => {
+    executable: (
+      args: { taskList: Array<{ id: string; task: string }> },
+      _context: { cwd: string },
+    ) => {
       return {
         response: "continue",
         yield: { type: "plan", response: args.taskList },

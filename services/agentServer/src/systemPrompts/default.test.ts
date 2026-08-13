@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createFrontendSystemPrompt,
   parseFrontendLibrary,
+  requiresTaskPlan,
   requiresWorkspaceMutation,
   workspaceCompletionAction,
 } from "./default";
@@ -15,6 +16,10 @@ describe("frontend agent policy", () => {
     expect(vuePrompt).toContain("The user selected Vue");
     expect(reactPrompt).toContain("frontend-only");
     expect(reactPrompt).toContain("Do not build command-line programs");
+    expect(reactPrompt).toContain("PRODUCT AND VISUAL QUALITY BAR");
+    expect(reactPrompt).toContain("not a centered stack");
+    expect(reactPrompt).toContain("focus-visible");
+    expect(reactPrompt).toContain("responsive at mobile and desktop widths");
   });
 
   test("keeps delegated or summarized context below the hard contract", () => {
@@ -45,6 +50,14 @@ describe("frontend agent policy", () => {
     );
     expect(requiresWorkspaceMutation("fix the broken preview")).toBe(true);
     expect(requiresWorkspaceMutation("what does this component do?")).toBe(false);
+  });
+
+  test("requires plans for substantive products but not trivial edits", () => {
+    expect(requiresTaskPlan("A kanban board with drag and drop")).toBe(true);
+    expect(requiresTaskPlan("Create a responsive habit tracker app")).toBe(true);
+    expect(requiresTaskPlan("Redesign the current experience")).toBe(true);
+    expect(requiresTaskPlan("Change the header title")).toBe(false);
+    expect(requiresTaskPlan("What does this component do?")).toBe(false);
   });
 
   test("rejects prose-only completion and stops after bounded retries", () => {

@@ -16,6 +16,7 @@ import {
 } from "../helper";
 import {
   createFrontendSystemPrompt,
+  requiresTaskPlan,
   requiresWorkspaceMutation,
   summariseAgentPrompt,
   type FrontendLibrary,
@@ -28,6 +29,7 @@ import {
   getConfiguredAppRuntimeMonitor,
   type AppRuntimeState,
   validateFrontendBuild,
+  validateFrontendQuality,
 } from "../runtime";
 import {
   archiveLargeUpdateFileArguments,
@@ -167,6 +169,13 @@ export class GeminiProvider {
             process.env["WORKSPACE_CONTAINER_PATH"]?.trim() || "/app/my-app",
           signal,
         })) ?? state;
+
+      if (state.status === "running") {
+        state =
+          (await validateFrontendQuality(
+            this.cwd || configured.ref.workspacePath,
+          )) ?? state;
+      }
     }
 
     handler.onChunk?.({ type: "runtime", response: state });
@@ -212,11 +221,15 @@ export class GeminiProvider {
       let completedTaskIds = new Set<string>();
       let runtimeTouched = false;
       let workspaceChanged = false;
+      let taskPlanCreated = false;
       let noChangeRetries = 0;
       let toolActivitySequence = 0;
       const mutationRequired =
         args.id === "1" && requiresWorkspaceMutation(args.message);
+      const taskPlanRequired =
+        args.id === "1" && requiresTaskPlan(args.message);
       const repairAttemptsByFingerprint = new Map<string, number>();
+      const completionRepairAttemptsByFingerprint = new Map<string, number>();
 
       const emitToolActivity = (
         id: string,
@@ -237,11 +250,12 @@ export class GeminiProvider {
       const runtimeRepairMessage = (
         runtimeState: AppRuntimeState | undefined,
         countAttempt: boolean,
+        attemptsByFingerprint = repairAttemptsByFingerprint,
       ): string | undefined => {
         if (!runtimeState) return undefined;
 
         if (runtimeState.status === "running") {
-          repairAttemptsByFingerprint.clear();
+          attemptsByFingerprint.clear();
           return undefined;
         }
 
@@ -249,11 +263,11 @@ export class GeminiProvider {
 
         const fingerprint = runtimeState.fingerprint ?? "unknown";
         const previousAttempts =
-          repairAttemptsByFingerprint.get(fingerprint) ?? 0;
+          attemptsByFingerprint.get(fingerprint) ?? 0;
         const attempts = countAttempt
           ? previousAttempts + 1
           : previousAttempts;
-        repairAttemptsByFingerprint.set(fingerprint, attempts);
+        attemptsByFingerprint.set(fingerprint, attempts);
 
         if (attempts <= 3) {
           return `${formatRuntimeObservation(runtimeState)}\n\nThe task cannot complete until this repairable application failure is resolved. Continue working.`;
@@ -322,6 +336,7 @@ export class GeminiProvider {
               systemInstruction: session.systemInstruction,
               functionDeclarations: this.functionDeclarations,
               abortSignal: args.signal,
+              requireTaskPlan: taskPlanRequired && !taskPlanCreated,
               requireWorkspaceTool: mutationRequired && !workspaceChanged,
             }),
           });
@@ -465,6 +480,7 @@ export class GeminiProvider {
                     });
                   }
                 } else if (tool.declaration.name === "createTaskPlan") {
+                  taskPlanCreated = true;
                   activeTaskPlan =
                     (functionCall.args?.taskList as any[]).map((t) => t.id) ??
                     [];
@@ -637,7 +653,11 @@ export class GeminiProvider {
             args.signal,
           );
 
-          const repairMessage = runtimeRepairMessage(runtimeState, false);
+          const repairMessage = runtimeRepairMessage(
+            runtimeState,
+            true,
+            completionRepairAttemptsByFingerprint,
+          );
           if (repairMessage) {
             newMessage = [{ text: repairMessage }];
             hasToolCall = true;

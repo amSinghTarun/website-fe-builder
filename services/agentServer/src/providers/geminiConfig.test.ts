@@ -3,6 +3,7 @@ import { FunctionCallingConfigMode, type FunctionDeclaration } from "@google/gen
 import { createGeminiGenerationConfig } from "./geminiConfig";
 
 const declarations = [
+  { name: "createTaskPlan" },
   { name: "readDirectory" },
   { name: "updateFile" },
   { name: "takeUserInput" },
@@ -34,7 +35,21 @@ describe("Gemini generation config", () => {
 
     expect(config.toolConfig?.functionCallingConfig).toEqual({
       mode: FunctionCallingConfigMode.ANY,
-      allowedFunctionNames: ["readDirectory", "updateFile"],
+      allowedFunctionNames: ["createTaskPlan", "readDirectory", "updateFile"],
+    });
+  });
+
+  test("can require a task plan before workspace implementation", () => {
+    const config = createGeminiGenerationConfig({
+      systemInstruction: "Build the selected frontend.",
+      functionDeclarations: declarations,
+      requireTaskPlan: true,
+      requireWorkspaceTool: true,
+    });
+
+    expect(config.toolConfig?.functionCallingConfig).toEqual({
+      mode: FunctionCallingConfigMode.ANY,
+      allowedFunctionNames: ["createTaskPlan"],
     });
   });
 });

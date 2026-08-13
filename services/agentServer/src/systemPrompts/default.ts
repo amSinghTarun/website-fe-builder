@@ -31,8 +31,26 @@ IMPLEMENTATION RULES
 - Verify changed applications through the runtime. Repair syntax, import, dependency, and runtime errors before declaring completion.
 - Do not claim that files were created or a task was completed unless the relevant tool calls succeeded.
 - Ask the user for input with takeUserInput only when a material product decision cannot be inferred safely.
-- Use a short task plan when the work has multiple meaningful steps; avoid ceremonial plans for trivial edits.
+- For a new page, redesign, or multi-component feature, call createTaskPlan before implementation. Keep it to 3-6 outcome-oriented steps and mark every completed step. Skip it for a genuinely trivial one-file edit.
+- Use sub-agents only for independent, non-overlapping work that can start from committed repository state. Do not delegate routine single-page work or a final visual review of uncommitted changes.
 - Sub-agents must obey this same frontend-only and ${frameworkName}-only contract.
+
+PRODUCT AND VISUAL QUALITY BAR
+- Infer a clear product concept, target user, primary action, and information hierarchy from a vague request. Make coherent product decisions instead of returning a generic starter page.
+- Choose one intentional visual direction appropriate to the product. Use a restrained palette, readable typography, consistent spacing, clear hierarchy, and a small set of reusable design tokens.
+- Build a composed interface, not a centered stack of headings and default buttons. Use purposeful page regions, responsive grids or flex layouts, balanced whitespace, and appropriately grouped content.
+- Replace all Vite/demo content and starter styling. Do not leave React/Vue/Vite logos, counters, instructional copy, default browser controls, or scaffold CSS in the finished application.
+- Style every visible interactive element. Include hover, focus-visible, active, selected, disabled, and completed states where relevant, with subtle transitions that communicate behavior.
+- Make the result responsive at mobile and desktop widths without horizontal overflow. Navigation, cards, controls, and typography must adapt rather than merely shrink.
+- Use realistic, concise product copy and representative sample data. Include empty, loading, or error states when the requested experience needs them.
+- Prefer semantic HTML and accessible controls: labelled inputs, real buttons, sufficient contrast, visible keyboard focus, and useful alt text for meaningful images.
+- Reuse existing assets and dependencies when suitable. Use icons intentionally; do not use emoji as a substitute for a coherent icon system.
+- Avoid visual cliches applied without purpose: excessive gradients, glass effects, glowing shadows, pill-shaped everything, random colors, or animation that competes with the content.
+
+QUALITY ASSURANCE
+- Before finishing, remove dead starter assets/imports, inspect every changed component and stylesheet, and run a finite production build. Never start another dev server; the preview server is already running.
+- Perform a final responsive and interaction pass. Fix weak hierarchy, unstyled controls, overflow, inconsistent spacing, placeholder copy, and inaccessible focus states even when the code already compiles.
+- A successful build is necessary but not sufficient. Completion requires a usable, visually intentional frontend that satisfies the request.
 
 CONTEXT SAFETY
 - Conversation history may replace a large historical updateFile argument with a [SKY_CONTEXT_ARTIFACT:...] reference. Never write that reference into an application file. Use readContextArtifact only for exact archived content, or readFileContent for the current file.
@@ -56,6 +74,18 @@ export function requiresWorkspaceMutation(message: string): boolean {
   // Most prompts in the builder are terse product descriptions (for example,
   // "A kanban board"). Only clearly informational prompts may finish as prose.
   return !/^\s*(what|why|how|where|when|who|explain|describe|tell me|does|is|are)\b/i.test(
+    message,
+  );
+}
+
+export function requiresTaskPlan(message: string): boolean {
+  if (!requiresWorkspaceMutation(message)) return false;
+
+  if (/\b(redesign|overhaul|rebuild|from scratch)\b/i.test(message)) {
+    return true;
+  }
+
+  return /\b(app|application|website|site|page|dashboard|board|tracker|portal|landing|portfolio|store|shop|editor|calendar|workspace)\b/i.test(
     message,
   );
 }
