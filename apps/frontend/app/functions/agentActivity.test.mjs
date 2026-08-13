@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   emptyAgentActivity,
+  parseToolActivity,
   parseAgentQuestions,
   reduceAgentActivity,
 } from "./agentActivity.ts";
@@ -87,5 +88,21 @@ describe("agent activity stream", () => {
       label: "Waiting for your responses to 2 questions",
       status: "active",
     });
+  });
+
+  test("parses transient tool updates without adding durable activity", () => {
+    const event = {
+      type: "toolActivity",
+      response: {
+        id: "1-3",
+        phase: "started",
+        summary: "Updating src/App.jsx",
+      },
+    };
+
+    expect(parseToolActivity(event.response)).toEqual(event.response);
+    expect(reduceAgentActivity(emptyAgentActivity, event)).toBe(
+      emptyAgentActivity,
+    );
   });
 });

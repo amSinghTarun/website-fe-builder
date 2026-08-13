@@ -19,10 +19,12 @@ import { createClientId } from "../functions/clientId";
 import {
   emptyAgentActivity,
   parseAgentQuestions,
+  parseToolActivity,
   reduceAgentActivity,
   type AgentQuestion,
   type AgentActivityState,
   type AgentStreamEvent,
+  type ToolActivity,
 } from "../functions/agentActivity";
 import {
   mapChatHistory,
@@ -71,6 +73,7 @@ export function App() {
   const [previewRevision, setPreviewRevision] = useState(0);
   const [agentActivity, setAgentActivity] =
     useState<AgentActivityState>(emptyAgentActivity);
+  const [toolActivity, setToolActivity] = useState<ToolActivity | null>(null);
   const [pendingAgentInput, setPendingAgentInput] =
     useState<PendingAgentInput | null>(null);
   const [agentAnswers, setAgentAnswers] = useState<Record<string, string>>({});
@@ -84,6 +87,9 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const generationAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
+  const toolActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const loadProjectFiles = useCallback(async () => {
     if (!projectId) return;
@@ -210,11 +216,14 @@ export function App() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, isGenerating, pendingAgentInput]);
+  }, [messages, isGenerating, pendingAgentInput, toolActivity]);
 
   useEffect(
     () => () => {
       generationAbortRef.current?.abort();
+      if (toolActivityTimerRef.current) {
+        clearTimeout(toolActivityTimerRef.current);
+      }
     },
     [],
   );
@@ -263,6 +272,26 @@ export function App() {
 
       const chunk = JSON.parse(data) as AgentStreamEvent;
 
+      if (chunk.type === "toolActivity") {
+        const activity = parseToolActivity(chunk.response);
+        if (activity) {
+          if (toolActivityTimerRef.current) {
+            clearTimeout(toolActivityTimerRef.current);
+            toolActivityTimerRef.current = null;
+          }
+          setToolActivity(activity);
+
+          if (activity.phase !== "started") {
+            toolActivityTimerRef.current = setTimeout(() => {
+              setToolActivity((current) =>
+                current?.id === activity.id ? null : current,
+              );
+              toolActivityTimerRef.current = null;
+            }, 2_000);
+          }
+        }
+      }
+
       if (chunk.type === "message" && typeof chunk.response === "string") {
         if (!assistantStarted) {
           assistantStarted = true;
@@ -285,7 +314,7 @@ export function App() {
         toast.error("The generated app is still unhealthy after automatic repairs.");
       }
 
-      if (chunk.type !== "message") {
+      if (chunk.type !== "message" && chunk.type !== "toolActivity") {
         setAgentActivity((previous) => reduceAgentActivity(previous, chunk));
       }
 
@@ -366,6 +395,11 @@ export function App() {
 
     setMessages((prev) => [...prev, userMessage]);
     setAgentActivity(emptyAgentActivity);
+    if (toolActivityTimerRef.current) {
+      clearTimeout(toolActivityTimerRef.current);
+      toolActivityTimerRef.current = null;
+    }
+    setToolActivity(null);
     setPendingAgentInput(null);
     setAgentAnswers({});
     setMessage("");
@@ -419,6 +453,11 @@ export function App() {
     setPendingAgentInput(null);
     setAgentAnswers({});
     setSubmittingAgentInput(false);
+    if (toolActivityTimerRef.current) {
+      clearTimeout(toolActivityTimerRef.current);
+      toolActivityTimerRef.current = null;
+    }
+    setToolActivity(null);
     setAgentActivity((previous) =>
       reduceAgentActivity(previous, {
         type: "stopped",
@@ -665,6 +704,26 @@ export function App() {
                     </button>
                   </div>
                 </form>
+              )}
+
+              {toolActivity && (
+                <div
+                  aria-live="polite"
+                  className={`flex w-full items-start gap-2 px-2 py-1 text-xs leading-4 transition-opacity duration-300 ${
+                    toolActivity.phase === "failed"
+                      ? "text-red-400/70"
+                      : "text-zinc-500"
+                  }`}
+                >
+                  {toolActivity.phase === "started" ? (
+                    <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
+                  ) : toolActivity.phase === "completed" ? (
+                    <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+                  ) : (
+                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                  )}
+                  <span>{toolActivity.summary}</span>
+                </div>
               )}
 
               {isGenerating && (

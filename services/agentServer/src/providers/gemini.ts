@@ -37,6 +37,7 @@ import {
   abortable,
   throwIfRunCancelled,
 } from "../runtime/AgentRunRegistry";
+import { summarizeToolCall, type ToolActivityPhase } from "../toolActivity";
 
 const implementationMutationTools = new Set([
   "createFile",
@@ -192,9 +193,26 @@ export class GeminiProvider {
       let runtimeTouched = false;
       let workspaceChanged = false;
       let noChangeRetries = 0;
+      let toolActivitySequence = 0;
       const mutationRequired =
         args.id === "1" && requiresWorkspaceMutation(args.message);
       const repairAttemptsByFingerprint = new Map<string, number>();
+
+      const emitToolActivity = (
+        id: string,
+        toolName: string,
+        toolArgs: Record<string, unknown> | undefined,
+        phase: ToolActivityPhase,
+      ) => {
+        args.handler.onChunk?.({
+          type: "toolActivity",
+          response: {
+            id,
+            phase,
+            summary: summarizeToolCall(toolName, toolArgs, phase),
+          },
+        });
+      };
 
       const runtimeRepairMessage = (
         runtimeState: AppRuntimeState | undefined,
@@ -313,15 +331,32 @@ export class GeminiProvider {
 
             for (let functionCall of response.functionCalls) {
               throwIfRunCancelled(args.signal);
-              // console.log("FUNCTION NAME : ", functionCall.name);
+              const toolName = functionCall.name ?? "unknownTool";
+              const functionArgs = functionCall.args as
+                | Record<string, unknown>
+                | undefined;
+              const toolActivityId = `${args.id}-${++toolActivitySequence}`;
+              emitToolActivity(
+                toolActivityId,
+                toolName,
+                functionArgs,
+                "started",
+              );
+
               try {
-                const tool = tools[functionCall.name as keyof typeof tools];
+                const tool = tools[toolName as keyof typeof tools];
 
                 if (!tool) {
+                  emitToolActivity(
+                    toolActivityId,
+                    toolName,
+                    functionArgs,
+                    "failed",
+                  );
                   functionCallResponses.push({
                     functionResponse: {
                       ...(functionCall.id && { id: functionCall.id }),
-                      name: functionCall.name,
+                      name: toolName,
                       response: {
                         output: "No such tool exist",
                       },
@@ -444,12 +479,24 @@ export class GeminiProvider {
                     },
                   },
                 });
+                emitToolActivity(
+                  toolActivityId,
+                  toolName,
+                  functionArgs,
+                  "completed",
+                );
               } catch (error: any) {
                 if (error instanceof AgentRunCancelledError) throw error;
+                emitToolActivity(
+                  toolActivityId,
+                  toolName,
+                  functionArgs,
+                  "failed",
+                );
                 functionCallResponses.push({
                   functionResponse: {
                     ...(functionCall.id && { id: functionCall.id }),
-                    name: functionCall.name,
+                    name: toolName,
                     response: {
                       output:
                         error instanceof Error

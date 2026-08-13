@@ -9,6 +9,12 @@ export type AgentQuestion = {
   question: string;
 };
 
+export type ToolActivity = {
+  id: string;
+  phase: "started" | "completed" | "failed";
+  summary: string;
+};
+
 export type AgentActivityStatus = "active" | "complete" | "error";
 
 export type AgentActivityItem = {
@@ -36,6 +42,30 @@ function responseText(response: unknown): string {
   } catch {
     return String(response);
   }
+}
+
+export function parseToolActivity(response: unknown): ToolActivity | null {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    return null;
+  }
+
+  const value = response as Record<string, unknown>;
+  const id = responseText(value.id).trim();
+  const phase = responseText(value.phase).trim();
+  const summary = responseText(value.summary).trim();
+  if (
+    !id ||
+    !summary ||
+    !["started", "completed", "failed"].includes(phase)
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    phase: phase as ToolActivity["phase"],
+    summary,
+  };
 }
 
 export function parseAgentQuestions(response: unknown): AgentQuestion[] {
@@ -130,7 +160,7 @@ export function reduceAgentActivity(
   state: AgentActivityState,
   event: AgentStreamEvent,
 ): AgentActivityState {
-  if (event.type === "message") return state;
+  if (event.type === "message" || event.type === "toolActivity") return state;
 
   if (event.type === "plan") {
     const steps = planItems(event.response).map((step) => ({
