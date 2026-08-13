@@ -8,6 +8,7 @@ import {
 } from "fs";
 import { resolveWorkspacePath } from "../helper";
 import { Tools, type ToolContext, type ToolResult } from "../types/tools";
+import { isContextArtifactReference } from "../context/contextArchive";
 
 export let fileTools = {
   readDirectory: {
@@ -182,6 +183,13 @@ export let fileTools = {
       const filePath = resolveWorkspacePath(context.cwd, args.filePath);
 
       if (typeof args.content === "string") {
+        if (isContextArtifactReference(args.content)) {
+          return {
+            response:
+              "Error: refused to write a context-artifact reference into application source. Use readContextArtifact for historical content or readFileContent for the current file, then provide real source code.",
+          };
+        }
+
         writeFileSync(filePath, args.content, "utf-8");
         return {
           response: `Wrote ${args.content.length} characters to ${args.filePath}`,

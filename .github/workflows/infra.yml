@@ -102,7 +102,12 @@ jobs:
 
           for deployment in $(kubectl get deployment -o name); do
             case "$deployment" in
-              *-agent-deployment|*-recovery|*-recovery-cron-deployment|*-ws-server-deployment)
+              *-agent-deployment)
+                kubectl set env "$deployment" \
+                  CONTEXT_ARCHIVE_PATH=/user-app/.sky-agent-context
+                kubectl rollout restart "$deployment"
+                ;;
+              *-recovery|*-recovery-cron-deployment|*-ws-server-deployment)
                 kubectl rollout restart "$deployment"
                 ;;
             esac

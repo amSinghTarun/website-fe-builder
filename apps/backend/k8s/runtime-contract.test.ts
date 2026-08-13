@@ -55,6 +55,7 @@ describe("per-project runtime contract", () => {
     expect(environment).toMatchObject({
       DATABASE_PROJECT_ID: databaseProjectId,
       WORKSPACE_PATH: "/user-app/my-app",
+      CONTEXT_ARCHIVE_PATH: "/user-app/.sky-agent-context",
       WORKSPACE_SERVICE: `${runtimeId}-workspace-service`,
       WORKSPACE_PORT: "5173",
       WORKSPACE_PUBLIC_HOST: "project.tarun.co",

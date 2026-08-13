@@ -13,9 +13,6 @@ import {
   rejectSubAgent,
   resolveSubAgent,
 } from "../helper";
-import path from "node:path";
-import os from "node:os";
-import fs, { writeFileSync } from "node:fs";
 import { summariseAgentPrompt, defaultSystemPrompt } from "../systemPrompts";
 import { prisma } from "@sky/db";
 import { normalizeToolResult } from "../types/tools";
@@ -24,6 +21,10 @@ import {
   getConfiguredAppRuntimeMonitor,
   type AppRuntimeState,
 } from "../runtime";
+import {
+  archiveLargeUpdateFileArguments,
+  getContextArchiveConfig,
+} from "../context/contextArchive";
 
 export class GeminiProvider {
   private static sessions: {
@@ -101,43 +102,15 @@ export class GeminiProvider {
     sessionKey: string,
     databaseProjectId: string,
   ): Promise<{ contextedCount: number; history: Content[] }> {
-    for (let content of history) {
-      if (content.role == "user" || !content.parts) continue;
-
-      let counter = 0;
-      for (let part of content.parts) {
-        if (!part.functionCall) continue;
-
-        if (part.functionCall.name == "updateFile") {
-          const currentContent = part.functionCall.args?.content as
-            | string
-            | undefined;
-
-          // console.log("\n\n\n ", currentContent);
-          if (currentContent && currentContent.length > 150) {
-            // console.log("\n\n •••••••••• this one selected");
-            let filePath = path.join(
-              os.homedir(),
-              ".loveable-contest",
-              databaseProjectId,
-            );
-            let fileName = `${Date.now()}_${counter++}.md`;
-            let dirExist = fs.existsSync(filePath);
-            if (!dirExist) fs.mkdirSync(filePath, { recursive: true });
-            writeFileSync(
-              path.join(filePath, fileName),
-              JSON.stringify(currentContent),
-            );
-            part.functionCall.args!.content = `Read file at ${path.join(filePath, fileName)}, to see the content of this update/write functionalCall`;
-          }
-        }
-      }
-    }
+    const archiveConfig = getContextArchiveConfig();
+    const contextualizedHistory = archiveConfig
+      ? archiveLargeUpdateFileArguments(history, archiveConfig)
+      : structuredClone(history);
 
     let contextedCount =
       GeminiProvider.sessions[sessionKey]?.contextualiseCount ?? 0;
 
-    return { contextedCount, history };
+    return { contextedCount, history: contextualizedHistory };
   }
 
   private async observeRuntime(handler: {

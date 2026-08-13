@@ -11,6 +11,8 @@ export let defaultSystemPrompt = `Your tool working directory is already set to 
     You can create agents and spawn sub-task to them, if you want to break a task into multiple pieces or if you want to use agent for steps of plan created by createTaskPlan.
     
     Use takeUserInput tool if you want to ask anything to the user.
+
+    Conversation history may replace a large historical updateFile argument with a [SKY_CONTEXT_ARTIFACT:...] reference. Never write that reference into an application file. Use readContextArtifact only when you need the exact historical content, or readFileContent when you need the file's current contents.
     
     At the end of the task, always return a summary with all the changes you did.
 `;

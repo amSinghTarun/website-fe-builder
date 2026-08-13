@@ -234,6 +234,8 @@ Sub-agent worktrees are placed in a sibling `worktrees/agent-<id>` directory. A 
 
 The main agent now runs with `/user-app/my-app` as its tool root. Tools return a uniform `ToolResult` containing optional runtime effects. The main Gemini loop performs one runtime observation per mutation batch, checks again before completion, emits structured `runtime`/`runtimeBlocked` stream events, and limits repeated repair requests for the same failure fingerprint to three. Its HTTP observation calls the workspace Service but uses the same `/workspace/<runtimeId>/` path and `project.tarun.co` Host header as the public iframe, so Vite host validation and base-path behavior are represented accurately. Sub-agents use separate in-memory session keys while retaining the raw database project UUID. A failed first model call is emitted as an SSE error and persisted without attempting token counting on an empty chat history, so the original Vertex/IAM error is not masked.
 
+Large historical `updateFile` arguments are compacted into content-addressed artifacts under `/user-app/.sky-agent-context/<runtimeId>/` on the project PVC. Context compaction clones Gemini history before replacing large arguments with artifact references, so the canonical tool-call objects are never mutated. A read-only `readContextArtifact` tool can retrieve an archived value by its SHA-256 artifact ID. `updateFile` rejects both these references and the legacy `/root/.loveable-contest` placeholders, preventing context metadata from being written into application source.
+
 `src/agent.ts` is an obsolete, fully commented version of the agent wrapper; the active implementation is `providers/gemini.ts`.
 
 ## 9. `services/wsServer`: WebSocket relay
