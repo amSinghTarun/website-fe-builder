@@ -43,6 +43,7 @@ import {
   delegatedResultsMessage,
   emitToolActivity,
   evaluateRuntimeRepair,
+  functionCallIdentity,
   type AgentChunk,
   type PlanTask,
 } from "../agentLoop/helpers";
@@ -494,17 +495,20 @@ export class GeminiProvider {
         }
 
         // Execute every tool call and feed its structured result back to Gemini.
+        const processedFunctionCalls = new Set<string>();
+        let functionCallResponses: PartListUnion = [];
+        let runtimeDirtyThisTurn = false;
         for await (const response of streamResponse) {
           throwIfRunCancelled(args.signal);
           const responseText = response.text ?? "";
 
           if (response.functionCalls && response.functionCalls.length > 0) {
-            let functionCallResponses: PartListUnion = [];
-
-            let runtimeDirtyThisBatch = false;
-
             for (const functionCall of response.functionCalls) {
               throwIfRunCancelled(args.signal);
+
+              const functionCallKey = functionCallIdentity(functionCall);
+              if (processedFunctionCalls.has(functionCallKey)) continue;
+              processedFunctionCalls.add(functionCallKey);
 
               const toolName = functionCall.name ?? "unknownTool";
               const functionArgs = functionCall.args as
@@ -563,7 +567,7 @@ export class GeminiProvider {
                 );
 
                 if (output.effects?.runtimeMayChange) {
-                  runtimeDirtyThisBatch = true;
+                  runtimeDirtyThisTurn = true;
                   runtimeTouched = true;
                 }
                 if (output.effects?.workspaceChanged) {
@@ -694,21 +698,6 @@ export class GeminiProvider {
 
               hasToolCall = true;
             }
-
-            if (args.id === "1" && runtimeDirtyThisBatch) {
-              throwIfRunCancelled(args.signal);
-              const runtimeState = await abortable(
-                this.observeRuntime(args.handler, false, args.signal),
-                args.signal,
-              );
-              const repairMessage = runtimeRepairMessage(runtimeState);
-
-              if (repairMessage) {
-                functionCallResponses.push({ text: repairMessage });
-              }
-            }
-
-            newMessage = functionCallResponses;
           }
 
           if (responseText) {
@@ -717,6 +706,23 @@ export class GeminiProvider {
             // progress. Only expose prose from the accepted terminal turn.
             withheldTurnText += responseText;
           }
+        }
+
+        if (hasToolCall) {
+          if (args.id === "1" && runtimeDirtyThisTurn) {
+            throwIfRunCancelled(args.signal);
+            const runtimeState = await abortable(
+              this.observeRuntime(args.handler, false, args.signal),
+              args.signal,
+            );
+            const repairMessage = runtimeRepairMessage(runtimeState);
+
+            if (repairMessage) {
+              functionCallResponses.push({ text: repairMessage });
+            }
+          }
+
+          newMessage = functionCallResponses;
         }
 
         throwIfRunCancelled(args.signal);
