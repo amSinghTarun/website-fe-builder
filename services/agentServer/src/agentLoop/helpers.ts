@@ -23,7 +23,6 @@ export function functionCallIdentity(functionCall: {
   name?: string;
   args?: unknown;
 }): string {
-  if (functionCall.id) return `id:${functionCall.id}`;
   return `${functionCall.name ?? "unknownTool"}:${JSON.stringify(
     functionCall.args ?? {},
   )}`;
