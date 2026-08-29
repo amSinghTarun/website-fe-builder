@@ -22,6 +22,7 @@ jobs:
       recovery: ${{ steps.filter.outputs.recovery }}
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      runtime_pipeline: ${{ steps.filter.outputs.runtime_pipeline }}
     steps:
       - uses: actions/checkout@v7
 
@@ -44,6 +45,8 @@ jobs:
               - 'apps/frontend/**'
               - 'packages/**'
               - 'k8s/apps/**'
+            runtime_pipeline:
+              - '.github/workflows/services.yml'
 
   backend:
     name: Build, push, and deploy backend
@@ -165,7 +168,8 @@ jobs:
     if: |
       needs.changes.outputs.agent == 'true' ||
       needs.changes.outputs.recovery == 'true' ||
-      needs.changes.outputs.backend == 'true'
+      needs.changes.outputs.backend == 'true' ||
+      needs.changes.outputs.runtime_pipeline == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -203,7 +207,8 @@ jobs:
     if: |
       needs.changes.outputs.agent == 'true' ||
       needs.changes.outputs.recovery == 'true' ||
-      needs.changes.outputs.backend == 'true'
+      needs.changes.outputs.backend == 'true' ||
+      needs.changes.outputs.runtime_pipeline == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -242,7 +247,8 @@ jobs:
       always() &&
       (needs.changes.outputs.agent == 'true' ||
        needs.changes.outputs.recovery == 'true' ||
-       needs.changes.outputs.backend == 'true') &&
+       needs.changes.outputs.backend == 'true' ||
+       needs.changes.outputs.runtime_pipeline == 'true') &&
       (needs.backend.result == 'success' || needs.backend.result == 'skipped') &&
       needs.agent.result == 'success' &&
       needs.recovery.result == 'success'
