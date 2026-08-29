@@ -87,6 +87,8 @@ jobs:
 
       - name: Apply database migrations
         run: |
+          # Infra and service workflows may run concurrently on a fresh cluster.
+          kubectl rollout status deployment/sky-postgres --timeout=300s
           migration_job=sky-db-migrate-${GITHUB_SHA::12}
           migration_template=${migration_job}-template
           trap 'kubectl delete cronjob "$migration_template" --ignore-not-found' EXIT
