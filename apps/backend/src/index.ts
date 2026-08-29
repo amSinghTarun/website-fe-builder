@@ -26,6 +26,8 @@ import { toRuntimeId } from "@sky/common";
 import { Readable } from "node:stream";
 
 const PORT = 3001;
+const AGENT_STARTUP_ATTEMPTS = 150;
+const AGENT_STARTUP_RETRY_MS = 2000;
 
 async function openAgentStream(
   databaseProjectId: string,
@@ -36,7 +38,7 @@ async function openAgentStream(
   const url = `http://${runtimeId}-agent-service.default.svc.cluster.local:3000/chat`;
   let lastError = "Agent runtime is not ready";
 
-  for (let attempt = 1; attempt <= 60; attempt++) {
+  for (let attempt = 1; attempt <= AGENT_STARTUP_ATTEMPTS; attempt++) {
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -54,7 +56,7 @@ async function openAgentStream(
       lastError = error instanceof Error ? error.message : String(error);
     }
 
-    if (attempt < 60) {
+    if (attempt < AGENT_STARTUP_ATTEMPTS) {
       await new Promise<void>((resolve, reject) => {
         const onAbort = () => {
           clearTimeout(timer);
@@ -66,7 +68,7 @@ async function openAgentStream(
           signal?.removeEventListener("abort", onAbort);
           resolve();
         };
-        const timer = setTimeout(finishWait, 2000);
+        const timer = setTimeout(finishWait, AGENT_STARTUP_RETRY_MS);
         if (signal?.aborted) onAbort();
       });
     }
