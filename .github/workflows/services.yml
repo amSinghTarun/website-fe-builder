@@ -111,7 +111,6 @@ jobs:
 
       - name: Pin backend image
         run: |
-          kubectl set env deployment/sky-backend RUNTIME_IMAGE_TAG=${{ github.sha }}
           kubectl set image deployment/sky-backend backend=tarunsingh28/sky-backend:${{ github.sha }}
           kubectl rollout status deployment/sky-backend --timeout=180s
 
@@ -163,7 +162,10 @@ jobs:
   agent:
     name: Build and push agent
     needs: changes
-    if: needs.changes.outputs.agent == 'true'
+    if: |
+      needs.changes.outputs.agent == 'true' ||
+      needs.changes.outputs.recovery == 'true' ||
+      needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -178,6 +180,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Build and push
+        if: needs.changes.outputs.agent == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -187,10 +190,20 @@ jobs:
             tarunsingh28/sky-agent:latest
             tarunsingh28/sky-agent:${{ github.sha }}
 
+      - name: Reuse current agent image for this commit
+        if: needs.changes.outputs.agent != 'true'
+        run: |
+          docker buildx imagetools create \
+            --tag tarunsingh28/sky-agent:${{ github.sha }} \
+            tarunsingh28/sky-agent:latest
+
   recovery:
     name: Build and push recovery-cron
     needs: changes
-    if: needs.changes.outputs.recovery == 'true'
+    if: |
+      needs.changes.outputs.agent == 'true' ||
+      needs.changes.outputs.recovery == 'true' ||
+      needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -205,6 +218,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Build and push
+        if: needs.changes.outputs.recovery == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -213,3 +227,41 @@ jobs:
           tags: |
             tarunsingh28/sky-recovery-cron:latest
             tarunsingh28/sky-recovery-cron:${{ github.sha }}
+
+      - name: Reuse current recovery image for this commit
+        if: needs.changes.outputs.recovery != 'true'
+        run: |
+          docker buildx imagetools create \
+            --tag tarunsingh28/sky-recovery-cron:${{ github.sha }} \
+            tarunsingh28/sky-recovery-cron:latest
+
+  runtime_tag:
+    name: Publish runtime image set
+    needs: [changes, backend, agent, recovery]
+    if: |
+      always() &&
+      (needs.changes.outputs.agent == 'true' ||
+       needs.changes.outputs.recovery == 'true' ||
+       needs.changes.outputs.backend == 'true') &&
+      (needs.backend.result == 'success' || needs.backend.result == 'skipped') &&
+      needs.agent.result == 'success' &&
+      needs.recovery.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Get GKE Credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: 'hundred-x-course'
+          location: 'asia-southeast1'
+
+      - name: Publish runtime image tag
+        run: |
+          kubectl set env deployment/sky-backend RUNTIME_IMAGE_TAG=${{ github.sha }}
+          kubectl rollout status deployment/sky-backend --timeout=180s
