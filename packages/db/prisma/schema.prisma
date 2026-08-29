@@ -32,6 +32,7 @@ model Project {
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @default(now())
   converstationHistory ConversationHistory[]
+  agentMemory          AgentMemory?
 }
 
 model ConversationHistory {
@@ -41,23 +42,45 @@ model ConversationHistory {
   contents         String
   type             ConversationType
   from             MessageFrom
+  // Final response shown in the UI after completion-message rewriting.
   output           String?
+  // Untouched terminal model text used to reconstruct Gemini history.
+  rawOutput        String?
+  errorMessage     String?
+  status           ConversationRunStatus?
   toolCall         String?
+  // Kept temporarily for compatibility with already-running project pods.
   completed        Boolean?
   snapshotCaptured Boolean?         @default(false)
   agentId          String?
 
-  // To think on
-  // 1. context
-  // 2. summary
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt()
+
+  @@index([projectId, type, agentId, id])
+}
+
+model AgentMemory {
+  projectId                  String   @id
+  project                    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  summary                    String
+  // ConversationHistory rows after this ID have not been summarized yet.
+  summarizedThroughHistoryId Int
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt()
 }
 
 enum ConversationType {
   TOOL_CALL
   TEXT_MESSAGE
+}
+
+enum ConversationRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  BLOCKED
 }
 
 enum MessageFrom {

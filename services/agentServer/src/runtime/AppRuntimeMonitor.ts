@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 import type {
   CoreV1Api,
   V1ContainerStatus,
@@ -7,18 +7,15 @@ import type {
 } from "@kubernetes/client-node";
 
 export type AppRuntimeStatus =
-  | "provisioning"
-  | "starting"
   | "running"
-  | "unhealthy"
   | "crashed"
   | "not_found"
-  | "unavailable";
+  | "unavailable"
+  | "provisioning"
+  | "starting"
+  | "unhealthy";
 
-export type RuntimeFailureScope =
-  | "application"
-  | "infrastructure"
-  | "unknown";
+export type RuntimeFailureScope = "application" | "infrastructure" | "unknown";
 
 export interface AppRuntimeRef {
   databaseProjectId: string;
@@ -315,10 +312,7 @@ export class AppRuntimeMonitor {
       }
 
       if (attempt < attempts - 1) {
-        const delayMs = Math.min(
-          maxDelayMs,
-          initialDelayMs * 2 ** attempt,
-        );
+        const delayMs = Math.min(maxDelayMs, initialDelayMs * 2 ** attempt);
         await this.sleep(delayMs);
       }
     }
@@ -333,19 +327,14 @@ export class AppRuntimeMonitor {
       });
     }
 
-    if (
-      lastState.status === "starting" &&
-      lastState.podPhase === "Running"
-    ) {
+    if (lastState.status === "starting" && lastState.podPhase === "Running") {
       return this.finalize({
         ...lastState,
         status: "unhealthy",
         failureScope: "application",
         repairableByAgent: true,
         reason: "Application failed to become ready after the retry window",
-        logs:
-          lastState.logs ??
-          (await this.getCurrentLogs(ref)),
+        logs: lastState.logs ?? (await this.getCurrentLogs(ref)),
         observedAt: new Date().toISOString(),
       });
     }
@@ -371,7 +360,9 @@ export class AppRuntimeMonitor {
     return this.getPreviousLogsForPod(ref, podName, tailLines);
   }
 
-  private async resolvePodName(ref: AppRuntimeRef): Promise<string | undefined> {
+  private async resolvePodName(
+    ref: AppRuntimeRef,
+  ): Promise<string | undefined> {
     const result = await this.coreApi.listNamespacedPod({
       namespace: ref.namespace,
       labelSelector: ref.podLabelSelector,
@@ -384,8 +375,7 @@ export class AppRuntimeMonitor {
         pod.metadata?.name,
     );
     activePods.sort(
-      (left, right) =>
-        this.creationTime(right) - this.creationTime(left),
+      (left, right) => this.creationTime(right) - this.creationTime(left),
     );
     return activePods[0]?.metadata?.name;
   }
@@ -404,7 +394,10 @@ export class AppRuntimeMonitor {
     );
   }
 
-  private async checkHttp(ref: AppRuntimeRef, podIP?: string): Promise<{
+  private async checkHttp(
+    ref: AppRuntimeRef,
+    podIP?: string,
+  ): Promise<{
     healthy: boolean;
     status?: number;
     body?: string;
@@ -540,10 +533,7 @@ export class AppRuntimeMonitor {
     const normalized = logs
       .split("\n")
       .map((line) =>
-        line.replace(
-          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*/,
-          "",
-        ),
+        line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*/, ""),
       )
       .filter(Boolean);
     return normalized.slice(-20).join("\n").slice(-4_000);

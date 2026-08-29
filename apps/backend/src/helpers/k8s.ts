@@ -1,5 +1,5 @@
 import { AppsV1Api, KubeConfig, CoreV1Api } from "@kubernetes/client-node";
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 import * as k8sConfs from "../../k8s";
 
 const kc = new KubeConfig();

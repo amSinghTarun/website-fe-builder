@@ -15,29 +15,8 @@ RESPONSE CONTRACT
 - Do not invent features, files, tests, or verification results.
 `;
 
-export function createCompletionRewriteRequest(args: {
-  userRequest: string;
-  draft: string;
-  workspaceChanged: boolean;
-  runtimeVerified: boolean;
-}): string {
-  return JSON.stringify({
-    userRequest: args.userRequest,
-    draft: args.draft,
-    verifiedFacts: {
-      workspaceChanged: args.workspaceChanged,
-      productionBuildAndPreviewHealthy: args.runtimeVerified,
-    },
-  });
-}
-
-export function isConciseCompletionMessage(message: string): boolean {
-  const wordCount = message.trim().split(/\s+/).filter(Boolean).length;
-  return wordCount > 0 && wordCount <= 80;
-}
-
 export function completionFallbackMessage(runtimeVerified: boolean): string {
   return runtimeVerified
-    ? "Done — the requested frontend changes are implemented. The production build and live preview are healthy."
-    : "Done — the requested frontend changes are implemented."
+    ? "Done — the requested changes are implemented. The production build and live preview are healthy."
+    : "Done — the requested changes are implemented.";
 }

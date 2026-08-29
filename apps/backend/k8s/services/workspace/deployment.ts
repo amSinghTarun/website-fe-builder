@@ -1,4 +1,4 @@
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 
 export const workspaceDeploymentSpec = (
   feLibrary: string,

@@ -20,8 +20,8 @@
         "@fastify/type-provider-json-schema-to-ts": "^5.0.0",
         "@kubernetes/client-node": "^1.4.0",
         "@scalar/fastify-api-reference": "^1.60.0",
+        "@sky/common": "workspace:*",
         "@sky/db": "workspace:*",
-        "@sky/runtime-id": "workspace:*",
         "argon2": "^0.44.0",
         "dotenv": "^17.4.2",
         "fastify": "^5.8.5",
@@ -62,6 +62,15 @@
         "vite": "^8.0.3",
       },
     },
+    "packages/common": {
+      "name": "@sky/common",
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5",
+      },
+    },
     "packages/db": {
       "name": "@sky/db",
       "dependencies": {
@@ -78,15 +87,6 @@
         "typescript": "^5",
       },
     },
-    "packages/runtime-id": {
-      "name": "@sky/runtime-id",
-      "devDependencies": {
-        "@types/bun": "latest",
-      },
-      "peerDependencies": {
-        "typescript": "^5",
-      },
-    },
     "services/agentServer": {
       "name": "agentServer",
       "dependencies": {
@@ -94,8 +94,8 @@
         "@google/genai": "^2.9.0",
         "@kubernetes/client-node": "^1.4.0",
         "@scalar/fastify-api-reference": "^1.61.0",
+        "@sky/common": "workspace:*",
         "@sky/db": "workspace:*",
-        "@sky/runtime-id": "workspace:*",
         "bunqueue": "^2.8.23",
         "dotenv": "^17.4.2",
         "fastify": "^5.8.5",
@@ -114,8 +114,8 @@
       "name": "recovery_cron",
       "dependencies": {
         "@google-cloud/storage": "^7.21.0",
+        "@sky/common": "workspace:*",
         "@sky/db": "workspace:*",
-        "@sky/runtime-id": "workspace:*",
         "archiver": "^8.0.0",
         "axios": "^1.18.1",
         "croner": "^10.0.1",
@@ -401,9 +401,9 @@
 
     "@scalar/validation": ["@scalar/validation@0.6.0", "", {}, "sha512-tpmmG+/xRE2Kn9RpflU3AIyZv08v10+E1ZrJCx7z6+/91zHVxy0M73kC1LT4/8PbYNt85ywyC8+n+D99JdMcGA=="],
 
-    "@sky/db": ["@sky/db@workspace:packages/db"],
+    "@sky/common": ["@sky/common@workspace:packages/common"],
 
-    "@sky/runtime-id": ["@sky/runtime-id@workspace:packages/runtime-id"],
+    "@sky/db": ["@sky/db@workspace:packages/db"],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 

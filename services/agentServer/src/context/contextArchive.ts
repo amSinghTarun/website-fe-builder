@@ -1,29 +1,25 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Content } from "@google/genai";
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 
-export const CONTEXT_ARTIFACT_PREFIX = "[SKY_CONTEXT_ARTIFACT:";
+const CONTEXT_ARTIFACT_PREFIX = "[SKY_CONTEXT_ARTIFACT:";
 const LEGACY_CONTEXT_REFERENCE = "Read file at /root/.loveable-contest/";
 const ARTIFACT_ID_PATTERN = /^[a-f0-9]{64}\.txt$/;
 
-export interface ContextArchiveConfig {
+interface ContextArchiveConfig {
   rootPath: string;
   databaseProjectId: string;
 }
 
-export function getContextArchiveConfig(
+export function getContextArchiveConfig({
   workspacePath = process.env["WORKSPACE_PATH"]?.trim() || process.cwd(),
-): ContextArchiveConfig | undefined {
-  const databaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
-  if (!databaseProjectId) return undefined;
-
+  databaseProjectId,
+}: {
+  workspacePath?: string;
+  databaseProjectId: string;
+}): ContextArchiveConfig {
   return {
     databaseProjectId,
     rootPath:
@@ -36,7 +32,7 @@ function projectArchivePath(config: ContextArchiveConfig): string {
   return path.join(config.rootPath, toRuntimeId(config.databaseProjectId));
 }
 
-export function archiveContextArtifact(
+function archiveContextArtifact(
   content: string,
   config: ContextArchiveConfig,
 ): string {
@@ -64,7 +60,7 @@ export function readContextArtifact(
   );
 }
 
-export function contextArtifactReference(
+function contextArtifactReference(
   artifactId: string,
   filePath: string,
 ): string {

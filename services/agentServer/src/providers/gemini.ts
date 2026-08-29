@@ -3,37 +3,29 @@ import {
   type Chat,
   type FunctionDeclaration,
   type PartListUnion,
-  type SendMessageParameters,
   type Content,
 } from "@google/genai";
-import { tools, mergeWorktree } from "../tools";
+import { getTool, tools } from "../tools";
 import "dotenv/config";
-import {
-  catchUserInputResolver,
-  getOutstandingSubAgentIds,
-  rejectSubAgent,
-  resolveSubAgent,
-} from "../helper";
+import { removeInputRequest } from "../inputRequestRegistry";
+import { subAgentRegistry } from "../subAgents/registry";
 import {
   createFrontendSystemPrompt,
   completionAgentPrompt,
   completionFallbackMessage,
-  createCompletionRewriteRequest,
-  isConciseCompletionMessage,
-  requiresTaskPlan,
-  requiresWorkspaceMutation,
+  intentClassifierPrompt,
   summariseAgentPrompt,
   type FrontendLibrary,
+  type RequestIntent,
   workspaceCompletionAction,
 } from "../systemPrompts";
-import { prisma } from "@sky/db";
-import { normalizeToolResult } from "../types/tools";
+import { prisma, type ConversationRunStatus } from "@sky/db";
 import {
-  formatRuntimeObservation,
   getConfiguredAppRuntimeMonitor,
   type AppRuntimeState,
   validateFrontendBuild,
   validateFrontendQuality,
+  fingerprintWorkspace,
 } from "../runtime";
 import {
   archiveLargeUpdateFileArguments,
@@ -44,27 +36,30 @@ import {
   abortable,
   throwIfRunCancelled,
 } from "../runtime/AgentRunRegistry";
-import { summarizeToolCall, type ToolActivityPhase } from "../toolActivity";
 import { createGeminiGenerationConfig } from "./geminiConfig";
-
-const implementationMutationTools = new Set([
-  "createFile",
-  "updateFile",
-  "deleteFile",
-  "waitForSubAgent",
-]);
+import {
+  applyTaskPlanToolCall,
+  delegatedResultsChangedWorkspace,
+  delegatedResultsMessage,
+  emitToolActivity,
+  evaluateRuntimeRepair,
+  type AgentChunk,
+  type PlanTask,
+} from "../agentLoop/helpers";
+import { startSubAgentLifecycle } from "../subAgents/lifecycle";
 
 export class GeminiProvider {
   private static sessions: {
-    [projectId: string]: {
+    [sessionKey: string]: {
       chat: Chat;
       systemInstruction: string;
       contextualiseCount?: number;
+      persistentSummary?: string;
+      summarizedThroughHistoryId?: number;
     };
   } = {};
+  private static sessionRestores = new Map<string, Promise<void>>();
   public cwd: string;
-  public static newMessages: Map<string, SendMessageParameters[]> = new Map([]);
-
   private static geminiClient = new GoogleGenAI({
     vertexai: true,
     project: process.env["GCP_PROJECT_ID"]!,
@@ -73,6 +68,45 @@ export class GeminiProvider {
   private projectId: string = "";
   private sessionKey: string;
   private frontendLibrary: FrontendLibrary;
+  private createdSession = false;
+
+  public static async create(
+    projectId: string,
+    frontendLibrary: FrontendLibrary,
+    systemPrompt?: string,
+    cwd?: string,
+    sessionKey?: string,
+  ): Promise<GeminiProvider> {
+    const provider = new GeminiProvider(
+      projectId,
+      frontendLibrary,
+      systemPrompt,
+      cwd,
+      sessionKey,
+    );
+    if (provider.sessionKey === projectId) {
+      let restore = GeminiProvider.sessionRestores.get(provider.sessionKey);
+      if (provider.createdSession) {
+        restore = provider.restoreMainSession();
+        GeminiProvider.sessionRestores.set(provider.sessionKey, restore);
+      }
+
+      if (!restore) return provider;
+      try {
+        await restore;
+      } catch (error) {
+        delete GeminiProvider.sessions[provider.sessionKey];
+        throw error;
+      } finally {
+        if (
+          GeminiProvider.sessionRestores.get(provider.sessionKey) === restore
+        ) {
+          GeminiProvider.sessionRestores.delete(provider.sessionKey);
+        }
+      }
+    }
+    return provider;
+  }
 
   public constructor(
     projectId: string,
@@ -85,14 +119,62 @@ export class GeminiProvider {
     this.frontendLibrary = frontendLibrary;
     this.sessionKey = sessionKey ?? projectId;
     this.cwd = cwd ?? "";
-    if (!GeminiProvider.sessions[this.sessionKey])
+    if (!GeminiProvider.sessions[this.sessionKey]) {
       GeminiProvider.sessions[this.sessionKey] = {
         ...this.createNewSession({ newSystemPrompt: systemPrompt }),
         contextualiseCount: 0,
       };
+      this.createdSession = true;
+    }
   }
 
-  private get functionDeclarations(): FunctionDeclaration[] {
+  private async restoreMainSession(): Promise<void> {
+    const memory = await prisma.agentMemory.findUnique({
+      where: { projectId: this.projectId },
+    });
+    const recentTurns = await prisma.conversationHistory.findMany({
+      where: {
+        projectId: this.projectId,
+        id: { gt: memory?.summarizedThroughHistoryId ?? 0 },
+        type: "TEXT_MESSAGE",
+        from: "USER",
+        output: { not: null },
+        AND: [
+          { OR: [{ agentId: "1" }, { agentId: null }] },
+          {
+            OR: [{ status: "SUCCEEDED" }, { status: null, completed: true }],
+          },
+        ],
+      },
+      orderBy: { id: "asc" },
+      select: {
+        contents: true,
+        output: true,
+        rawOutput: true,
+      },
+    });
+
+    const history: Content[] = recentTurns.flatMap((turn) => {
+      const assistantMessage = turn.rawOutput?.trim() || turn.output?.trim();
+      if (!assistantMessage) return [];
+      return [
+        { role: "user", parts: [{ text: turn.contents }] },
+        { role: "model", parts: [{ text: assistantMessage }] },
+      ];
+    });
+
+    GeminiProvider.sessions[this.sessionKey] = {
+      ...this.createNewSession({
+        newSystemPrompt: memory?.summary,
+        history,
+      }),
+      contextualiseCount: 0,
+      persistentSummary: memory?.summary,
+      summarizedThroughHistoryId: memory?.summarizedThroughHistoryId,
+    };
+  }
+
+  private functionDeclarations(): FunctionDeclaration[] {
     return Object.values(tools).map((tool) => tool.declaration);
   }
 
@@ -109,13 +191,16 @@ export class GeminiProvider {
       history: args.history ?? [],
       config: createGeminiGenerationConfig({
         systemInstruction,
-        functionDeclarations: this.functionDeclarations,
+        functionDeclarations: this.functionDeclarations(),
       }),
     });
     return { chat, systemInstruction };
   }
 
-  private static async summariseChat(history: Content[]): Promise<string> {
+  private static async summariseChat(
+    history: Content[],
+    previousSummary?: string,
+  ): Promise<string> {
     const summariseAgent = GeminiProvider.geminiClient.chats.create({
       model: "gemini-2.5-flash",
       config: {
@@ -123,51 +208,104 @@ export class GeminiProvider {
       },
     });
     const response = await summariseAgent.sendMessage({
-      message: JSON.stringify(history),
+      message: JSON.stringify({
+        previousSummary: previousSummary || null,
+        recentHistory: history,
+      }),
     });
     const summary = response.text ?? "Unable to summarize previous context.";
     return summary;
   }
 
-  private static async rewriteCompletionMessage(args: {
+  private static contextualiseChat(
+    history: Content[],
+    sessionKey: string,
+    databaseProjectId: string,
+  ): { contextedCount: number; history: Content[] } {
+    const archiveConfig = getContextArchiveConfig({ databaseProjectId });
+    const contextualizedHistory = archiveLargeUpdateFileArguments(
+      history,
+      archiveConfig,
+    );
+
+    const contextedCount =
+      GeminiProvider.sessions[sessionKey]?.contextualiseCount ?? 0;
+
+    return { contextedCount, history: contextualizedHistory };
+  }
+
+  private static async rewriteCompletionMessageAgent(args: {
     userRequest: string;
     draft: string;
     workspaceChanged: boolean;
     runtimeVerified: boolean;
   }): Promise<string> {
-    const fallback = completionFallbackMessage(args.runtimeVerified);
-
     try {
       const completionAgent = GeminiProvider.geminiClient.chats.create({
         model: "gemini-2.5-flash",
         config: { systemInstruction: completionAgentPrompt },
       });
       const response = await completionAgent.sendMessage({
-        message: createCompletionRewriteRequest(args),
+        message: JSON.stringify({
+          userRequest: args.userRequest,
+          draft: args.draft,
+          verifiedFacts: {
+            workspaceChanged: args.workspaceChanged,
+            productionBuildAndPreviewHealthy: args.runtimeVerified,
+          },
+        }),
       });
-      const message = response.text?.trim() ?? "";
-
-      return isConciseCompletionMessage(message) ? message : fallback;
+      return (
+        response.text?.trim() ?? completionFallbackMessage(args.runtimeVerified)
+      );
     } catch (error) {
       console.error("Unable to format completion message:", error);
-      return fallback;
+      return completionFallbackMessage(args.runtimeVerified);
     }
   }
 
-  private static async contextualiseChat(
-    history: Content[],
-    sessionKey: string,
-    databaseProjectId: string,
-  ): Promise<{ contextedCount: number; history: Content[] }> {
-    const archiveConfig = getContextArchiveConfig();
-    const contextualizedHistory = archiveConfig
-      ? archiveLargeUpdateFileArguments(history, archiveConfig)
-      : structuredClone(history);
+  private static async classifyRequestIntent(
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<RequestIntent> {
+    try {
+      const response = await GeminiProvider.geminiClient.models.generateContent(
+        {
+          model: "gemini-2.5-flash",
+          contents: JSON.stringify({ userMessage: message }),
+          config: {
+            systemInstruction: intentClassifierPrompt,
+            responseMimeType: "application/json",
+            responseJsonSchema: {
+              type: "object",
+              properties: {
+                intent: {
+                  type: "string",
+                  enum: ["implementation", "informational", "ambiguous"],
+                },
+              },
+              required: ["intent"],
+              additionalProperties: false,
+            },
+            temperature: 0,
+            maxOutputTokens: 120,
+            ...(signal && { abortSignal: signal }),
+          },
+        },
+      );
 
-    let contextedCount =
-      GeminiProvider.sessions[sessionKey]?.contextualiseCount ?? 0;
+      if (!response.text?.trim()) return "ambiguous";
 
-    return { contextedCount, history: contextualizedHistory };
+      const parsed = JSON.parse(response.text) as { intent: RequestIntent };
+      return parsed.intent === "implementation" ||
+        parsed.intent === "informational"
+        ? parsed.intent
+        : "ambiguous";
+    } catch (error) {
+      if (signal?.aborted) throw new AgentRunCancelledError();
+      console.error("Unable to classify request intent:", error);
+      return "ambiguous";
+    }
   }
 
   private async observeRuntime(
@@ -177,7 +315,7 @@ export class GeminiProvider {
     verifyBuild = false,
     signal?: AbortSignal,
   ): Promise<AppRuntimeState | undefined> {
-    const configured = getConfiguredAppRuntimeMonitor();
+    const configured = getConfiguredAppRuntimeMonitor(this.projectId);
 
     if (!configured || configured.ref.databaseProjectId !== this.projectId) {
       return undefined;
@@ -215,30 +353,35 @@ export class GeminiProvider {
     id: string;
     message: string;
     handler: {
-      onChunk?: (chunk: { type: string; response: any; uuid?: string }) => void;
+      onChunk?: (chunk: AgentChunk) => void;
       onFinish?: () => void;
     };
     signal?: AbortSignal;
   }) {
-    let summary = "";
-    let dbConverstaionId;
+    let finalOutput = "";
+    let rawFinalOutput = "";
+    let runStatus: ConversationRunStatus = "RUNNING";
+    let runError: string | null = null;
+    let conversationRecord: { id: number } | undefined;
     try {
       let newMessage: PartListUnion = [{ text: args.message }];
-      let subAgentResponse: PartListUnion = [];
       let hasToolCall = true;
+      const initialWorkspaceFingerprint =
+        args.id === "1" ? await fingerprintWorkspace(this.cwd) : undefined;
 
-      // only store function calls for main agent and not for sub-agents - this is wrong,
-      // if we want to recover we need to store the sub-agent calls and also the directory they are working in
-      // (args.id == "1
-      dbConverstaionId = await prisma.conversationHistory.create({
+      // Persist the raw user turn before starting any model or tool work.
+      conversationRecord = await prisma.conversationHistory.create({
         data: {
-          completed: false,
           contents: args.message,
           from: "USER",
           projectId: this.projectId,
           snapshotCaptured: false,
           type: "TEXT_MESSAGE",
-          output: summary,
+          output: null,
+          rawOutput: null,
+          errorMessage: null,
+          status: runStatus,
+          completed: false,
           agentId: args.id,
         },
         select: {
@@ -246,66 +389,31 @@ export class GeminiProvider {
         },
       });
 
-      let activeTaskPlan: string[] | null = null;
-      let completedTaskIds = new Set<string>();
+      const activeTaskPlan = new Map<string, PlanTask>();
+      const completedTaskIds = new Set<string>();
       let runtimeTouched = false;
       let workspaceChanged = false;
       let runtimeVerified = false;
-      let taskPlanCreated = false;
+      let requestIntent: RequestIntent | undefined;
+      let mutationRequired = false;
       let noChangeRetries = 0;
       let toolActivitySequence = 0;
-      const mutationRequired =
-        args.id === "1" && requiresWorkspaceMutation(args.message);
-      const taskPlanRequired =
-        args.id === "1" && requiresTaskPlan(args.message);
       const repairAttemptsByFingerprint = new Map<string, number>();
       const completionRepairAttemptsByFingerprint = new Map<string, number>();
 
-      const emitToolActivity = (
-        id: string,
-        toolName: string,
-        toolArgs: Record<string, unknown> | undefined,
-        phase: ToolActivityPhase,
-      ) => {
-        args.handler.onChunk?.({
-          type: "toolActivity",
-          response: {
-            id,
-            phase,
-            summary: summarizeToolCall(toolName, toolArgs, phase),
-          },
-        });
-      };
-
       const runtimeRepairMessage = (
-        runtimeState: AppRuntimeState | undefined,
-        countAttempt: boolean,
+        runtimeState: Awaited<ReturnType<typeof this.observeRuntime>>,
         attemptsByFingerprint = repairAttemptsByFingerprint,
       ): string | undefined => {
-        if (!runtimeState) return undefined;
+        const decision = evaluateRuntimeRepair(
+          runtimeState,
+          attemptsByFingerprint,
+        );
+        if (decision.action === "retry") return decision.message;
+        if (decision.action !== "blocked") return undefined;
 
-        if (runtimeState.status === "running") {
-          attemptsByFingerprint.clear();
-          return undefined;
-        }
-
-        if (!runtimeState.repairableByAgent) return undefined;
-
-        const fingerprint = runtimeState.fingerprint ?? "unknown";
-        const previousAttempts =
-          attemptsByFingerprint.get(fingerprint) ?? 0;
-        const attempts = countAttempt
-          ? previousAttempts + 1
-          : previousAttempts;
-        attemptsByFingerprint.set(fingerprint, attempts);
-
-        if (attempts <= 3) {
-          return `${formatRuntimeObservation(runtimeState)}\n\nThe task cannot complete until this repairable application failure is resolved. Continue working.`;
-        }
-
-        const blockedMessage =
-          "The generated application remains unhealthy after three automatic repair attempts.";
-        summary += ` ${blockedMessage}`;
+        runStatus = "BLOCKED";
+        runError = decision.message;
         args.handler.onChunk?.({
           type: "runtimeBlocked",
           response: runtimeState,
@@ -313,61 +421,63 @@ export class GeminiProvider {
         return undefined;
       };
 
+      // Continue until no tools, repairs, plans, or delegated results remain.
       while (hasToolCall) {
         throwIfRunCancelled(args.signal);
         let streamResponse;
+        hasToolCall = false;
+        let withheldTurnText = "";
+
         try {
           console.log("\n\n\n------------------------------------");
 
-          let currentHistory =
+          // Compact oversized tool arguments before sending the next model turn.
+          const currentHistory =
             GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
           if (currentHistory.length) {
-            let sessionTokens =
+            const sessionTokens =
               await GeminiProvider.geminiClient.models.countTokens({
                 model: "gemini-2.5-flash",
                 contents: currentHistory,
               });
 
-            // only contextualiseChat
             if ((sessionTokens?.totalTokens ?? 0) >= 1000) {
-              let inLoopContextualiseChat =
-                await GeminiProvider.contextualiseChat(
+              const inLoopContextualiseChat =
+                GeminiProvider.contextualiseChat(
                   currentHistory,
                   this.sessionKey,
                   this.projectId,
                 );
+              const currentSession = GeminiProvider.sessions[this.sessionKey]!;
 
               GeminiProvider.sessions[this.sessionKey] = {
                 ...this.createNewSession({
+                  newSystemPrompt: currentSession.persistentSummary,
                   history: inLoopContextualiseChat.history,
                 }),
                 contextualiseCount: ++inLoopContextualiseChat.contextedCount,
+                persistentSummary: currentSession.persistentSummary,
+                summarizedThroughHistoryId:
+                  currentSession.summarizedThroughHistoryId,
               };
             }
           }
 
           throwIfRunCancelled(args.signal);
 
-          let messageForStream = {
-            message: [...newMessage, ...subAgentResponse],
-          };
-
-          // console.log(args.id, " - MESSAGE TO LLM : ", messageForStream);
-
-          subAgentResponse = [];
-
+          // Send the current user, tool, repair, or delegation message to Gemini.
           const session = GeminiProvider.sessions[this.sessionKey]!;
           streamResponse = await session.chat.sendMessageStream({
-            ...messageForStream,
+            message: newMessage,
             // A per-request config does not inherit the chat config in
             // @google/genai. Repeat the system/tool configuration here so
             // adding an abort signal does not silently remove every tool.
             config: createGeminiGenerationConfig({
               systemInstruction: session.systemInstruction,
-              functionDeclarations: this.functionDeclarations,
+              functionDeclarations: this.functionDeclarations(),
               abortSignal: args.signal,
-              requireTaskPlan: taskPlanRequired && !taskPlanCreated,
-              requireWorkspaceTool: mutationRequired && !workspaceChanged,
+              forceImplementationToolCall:
+                mutationRequired && !workspaceChanged,
             }),
           });
         } catch (error: any) {
@@ -377,52 +487,49 @@ export class GeminiProvider {
             error.status === 429
               ? "Limit reached, try after a minute"
               : `Error: ${error.message || JSON.stringify(error)}`;
-          summary += ` ${errorMessage}`;
-          args.handler.onChunk &&
-            args.handler.onChunk({ type: "error", response: errorMessage });
-          hasToolCall = false;
+          runStatus = "FAILED";
+          runError = errorMessage;
+          args.handler.onChunk?.({ type: "error", response: errorMessage });
           break;
         }
 
-        hasToolCall = false;
-        let withheldTurnText = "";
-
-        for await (let response of streamResponse) {
+        // Execute every tool call and feed its structured result back to Gemini.
+        for await (const response of streamResponse) {
           throwIfRunCancelled(args.signal);
           const responseText = response.text ?? "";
 
           if (response.functionCalls && response.functionCalls.length > 0) {
             let functionCallResponses: PartListUnion = [];
 
-            let subAgentToolCalls: Array<{
-              id: string;
-              run: Promise<any>;
-            }> = [];
             let runtimeDirtyThisBatch = false;
 
-            for (let functionCall of response.functionCalls) {
+            for (const functionCall of response.functionCalls) {
               throwIfRunCancelled(args.signal);
+
               const toolName = functionCall.name ?? "unknownTool";
               const functionArgs = functionCall.args as
                 | Record<string, unknown>
                 | undefined;
               const toolActivityId = `${args.id}-${++toolActivitySequence}`;
+
+              const tool = getTool(toolName);
+
               emitToolActivity(
                 toolActivityId,
-                toolName,
+                tool,
                 functionArgs,
                 "started",
+                args.handler.onChunk,
               );
 
               try {
-                const tool = tools[toolName as keyof typeof tools];
-
                 if (!tool) {
                   emitToolActivity(
                     toolActivityId,
-                    toolName,
+                    tool,
                     functionArgs,
                     "failed",
+                    args.handler.onChunk,
                   );
                   functionCallResponses.push({
                     functionResponse: {
@@ -440,36 +547,77 @@ export class GeminiProvider {
                   args: {
                     ...(functionCall.args as any),
                   },
-                  context: { cwd: this.cwd, signal: args.signal },
+                  context: {
+                    cwd: this.cwd,
+                    databaseProjectId: this.projectId,
+                    agentRunId: String(conversationRecord.id),
+                    signal: args.signal,
+                  },
                 };
 
-                const output = normalizeToolResult(
-                  await abortable(
-                    Promise.resolve(
-                      tool.executable(toolArgs.args, toolArgs.context),
-                    ),
-                    args.signal,
+                const output = await abortable(
+                  Promise.resolve(
+                    tool.executable(toolArgs.args, toolArgs.context),
                   ),
+                  args.signal,
                 );
 
                 if (output.effects?.runtimeMayChange) {
                   runtimeDirtyThisBatch = true;
                   runtimeTouched = true;
                 }
-                const commandChangesDependencies =
-                  tool.declaration.name === "executeBash" &&
-                  /\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|uninstall)\b/i.test(
-                    String(functionCall.args?.fullCommand ?? ""),
-                  );
-                if (
-                  output.effects?.workspaceChanged &&
-                  (implementationMutationTools.has(tool.declaration.name!) ||
-                    commandChangesDependencies)
-                ) {
+                if (output.effects?.workspaceChanged) {
                   workspaceChanged = true;
                 }
 
-                // Prisma Call Here for the calls of LLM
+                if (tool.declaration.name === "createSubAgent") {
+                  const provisionOutput = output as {
+                    response: string;
+                    workspacePath?: string;
+                  };
+                  if (provisionOutput.workspacePath) {
+                    const subAgentId = functionCall.args?.id as string;
+                    const subAgentSession = new GeminiProvider(
+                      this.projectId,
+                      this.frontendLibrary,
+                      functionCall.args?.systemPrompt as string,
+                      provisionOutput.workspacePath,
+                      `${this.sessionKey}:agent:${subAgentId}`,
+                    );
+                    startSubAgentLifecycle({
+                      id: subAgentId,
+                      projectId: this.projectId,
+                      parentRunId: String(conversationRecord.id),
+                      parentAgentId: args.id,
+                      mainWorktreePath: this.cwd || process.cwd(),
+                      start: () =>
+                        subAgentSession.agentLoop({
+                          id: subAgentId,
+                          message: functionCall.args?.prompt as string,
+                          signal: args.signal,
+                          handler: { onChunk: args.handler.onChunk },
+                        }),
+                      onSettled: (result) => {
+                        args.handler.onChunk?.({
+                          type:
+                            result.status === "MERGED"
+                              ? "subAgentFinished"
+                              : "subAgentFailed",
+                          response: result,
+                        });
+                      },
+                    });
+                  }
+                }
+
+                applyTaskPlanToolCall({
+                  toolName: tool.declaration.name ?? "",
+                  toolArgs: functionArgs,
+                  output,
+                  activeTaskPlan,
+                  completedTaskIds,
+                });
+
                 await prisma.conversationHistory.create({
                   data: {
                     contents: JSON.stringify(toolArgs),
@@ -485,49 +633,12 @@ export class GeminiProvider {
                   },
                 });
 
-                if (tool.declaration.name == "createSubAgent") {
-                  let provisionOutput = output as {
-                    response: string;
-                    workspacePath?: string;
-                    yield?: { type: string; response: any };
-                  };
-                  if (provisionOutput.workspacePath) {
-                    let subAgentSession = new GeminiProvider(
-                      this.projectId,
-                      this.frontendLibrary,
-                      functionCall.args?.systemPrompt as string,
-                      provisionOutput.workspacePath,
-                      `${this.sessionKey}:agent:${functionCall.args?.id}`,
-                    );
-                    subAgentToolCalls.push({
-                      id: functionCall.args?.id as string,
-                      run: subAgentSession.agentLoop({
-                        id: functionCall.args?.id as string,
-                        message: functionCall.args?.prompt as string,
-                        signal: args.signal,
-                        handler: { onChunk: args.handler.onChunk },
-                      }),
-                    });
-                  }
-                } else if (tool.declaration.name === "createTaskPlan") {
-                  taskPlanCreated = true;
-                  activeTaskPlan =
-                    (functionCall.args?.taskList as any[]).map((t) => t.id) ??
-                    [];
-                  completedTaskIds = new Set();
-                } else if (
-                  tool.declaration.name === "informCompletedTaskFromTaskPlan"
-                ) {
-                  completedTaskIds.add(functionCall.args?.id as string);
-                }
-
                 if (output.yield) {
-                  args.handler.onChunk &&
-                    args.handler.onChunk({
-                      type: output.yield.type,
-                      response: output.yield.response,
-                      uuid: output.yield.uuid,
-                    });
+                  args.handler.onChunk?.({
+                    type: output.yield.type,
+                    response: output.yield.response,
+                    uuid: output.yield.uuid,
+                  });
 
                   if (output.yield?.resolver)
                     try {
@@ -537,7 +648,7 @@ export class GeminiProvider {
                       );
                     } finally {
                       if (output.yield.uuid) {
-                        catchUserInputResolver.delete(output.yield.uuid);
+                        removeInputRequest(output.yield.uuid);
                       }
                     }
                 }
@@ -553,17 +664,19 @@ export class GeminiProvider {
                 });
                 emitToolActivity(
                   toolActivityId,
-                  toolName,
+                  tool,
                   functionArgs,
                   "completed",
+                  args.handler.onChunk,
                 );
               } catch (error: any) {
                 if (error instanceof AgentRunCancelledError) throw error;
                 emitToolActivity(
                   toolActivityId,
-                  toolName,
+                  tool,
                   functionArgs,
                   "failed",
+                  args.handler.onChunk,
                 );
                 functionCallResponses.push({
                   functionResponse: {
@@ -582,52 +695,13 @@ export class GeminiProvider {
               hasToolCall = true;
             }
 
-            subAgentToolCalls.forEach(({ id, run }) => {
-              void run
-                .then((response) => {
-                  mergeWorktree({
-                    id: response.id,
-                    targetBranch: "main",
-                    mainWorktreePath: this.cwd || process.cwd(),
-                  })
-                    .then(async (reply: any) => {
-                      resolveSubAgent(response.id, {
-                        summary: response.summary,
-                        ...reply,
-                      });
-                      await prisma.conversationHistory.create({
-                        data: {
-                          contents: JSON.stringify({
-                            args: {
-                              id: response.id,
-                              targetBranch: "main",
-                              mainWorktreePath: this.cwd || process.cwd(),
-                            },
-                          }),
-                          from: "LOOP",
-                          toolCall: "mergeWorkTree",
-                          projectId: this.projectId,
-                          type: "TOOL_CALL",
-                          agentId: args.id,
-                        },
-                      });
-                    })
-                    .catch((error: any) => {
-                      rejectSubAgent(response.id, error);
-                    });
-                })
-                .catch((error: any) => {
-                  rejectSubAgent(id, error);
-                });
-            });
-
             if (args.id === "1" && runtimeDirtyThisBatch) {
               throwIfRunCancelled(args.signal);
               const runtimeState = await abortable(
                 this.observeRuntime(args.handler, false, args.signal),
                 args.signal,
               );
-              const repairMessage = runtimeRepairMessage(runtimeState, true);
+              const repairMessage = runtimeRepairMessage(runtimeState);
 
               if (repairMessage) {
                 functionCallResponses.push({ text: repairMessage });
@@ -643,17 +717,50 @@ export class GeminiProvider {
             // progress. Only expose prose from the accepted terminal turn.
             withheldTurnText += responseText;
           }
-
         }
 
         throwIfRunCancelled(args.signal);
 
+        // Surface already-settled delegated work without blocking the main agent.
+        const readySubAgentResults = await subAgentRegistry.collectRun(
+          {
+            projectId: this.projectId,
+            parentRunId: String(conversationRecord.id),
+          },
+          "ready",
+        );
+        if (readySubAgentResults.length > 0) {
+          const mergedWorkspace =
+            delegatedResultsChangedWorkspace(readySubAgentResults);
+          workspaceChanged ||= mergedWorkspace;
+          runtimeTouched ||= mergedWorkspace;
+          newMessage = [
+            ...newMessage,
+            {
+              text: delegatedResultsMessage(readySubAgentResults, false),
+            },
+          ];
+          hasToolCall = true;
+        }
+
+        // Confirm net filesystem changes instead of trusting tool declarations.
+        if (!hasToolCall && args.id === "1" && initialWorkspaceFingerprint) {
+          const currentWorkspaceFingerprint = await abortable(
+            fingerprintWorkspace(this.cwd),
+            args.signal,
+          );
+          workspaceChanged =
+            currentWorkspaceFingerprint !== initialWorkspaceFingerprint;
+          runtimeTouched ||= workspaceChanged;
+        }
+
+        // Resolve unfinished plan steps before collecting delegated work.
         if (
           !hasToolCall &&
-          activeTaskPlan &&
-          completedTaskIds.size < activeTaskPlan.length
+          activeTaskPlan.size > 0 &&
+          completedTaskIds.size < activeTaskPlan.size
         ) {
-          const remaining = activeTaskPlan.filter(
+          const remaining = [...activeTaskPlan.keys()].filter(
             (id) => !completedTaskIds.has(id),
           );
           newMessage = [
@@ -663,16 +770,36 @@ export class GeminiProvider {
             },
           ];
           hasToolCall = true;
-        } else if (getOutstandingSubAgentIds().length > 0) {
-          const outstandingSubAgents = getOutstandingSubAgentIds();
-          newMessage = [
-            ...newMessage,
-            {
-              text: `You still have ${outstandingSubAgents.length} unfinished agent(s): ${outstandingSubAgents.join(", ")}. Call waitForSubAgent for each one before completing.`,
-            },
-          ];
-          hasToolCall = true;
-        } else if (!hasToolCall && args.id === "1" && runtimeTouched) {
+        }
+
+        // Automatically join every remaining delegate at the completion boundary.
+        if (!hasToolCall) {
+          const subAgentResults = await abortable(
+            subAgentRegistry.collectRun(
+              {
+                projectId: this.projectId,
+                parentRunId: String(conversationRecord.id),
+              },
+              "all",
+            ),
+            args.signal,
+          );
+          if (subAgentResults.length > 0) {
+            const mergedWorkspace =
+              delegatedResultsChangedWorkspace(subAgentResults);
+            workspaceChanged ||= mergedWorkspace;
+            runtimeTouched ||= mergedWorkspace;
+            newMessage = [
+              {
+                text: delegatedResultsMessage(subAgentResults, true),
+              },
+            ];
+            hasToolCall = true;
+          }
+        }
+
+        // Verify the final preview only after plans and delegated work settle.
+        if (!hasToolCall && args.id === "1" && runtimeTouched) {
           const runtimeState = await abortable(
             this.observeRuntime(args.handler, true, args.signal),
             args.signal,
@@ -681,7 +808,6 @@ export class GeminiProvider {
 
           const repairMessage = runtimeRepairMessage(
             runtimeState,
-            true,
             completionRepairAttemptsByFingerprint,
           );
           if (repairMessage) {
@@ -690,14 +816,31 @@ export class GeminiProvider {
           }
         }
 
+        if (runStatus !== "RUNNING") break;
+
+        // Classify only a terminal no-change response to avoid an eager LLM call.
         let rejectedProseCompletion = false;
-        const completionAction = mutationRequired
-          ? workspaceCompletionAction({
-              message: args.message,
-              workspaceChanged,
-              previousRetries: noChangeRetries,
-            })
-          : "accept";
+        if (
+          !hasToolCall &&
+          args.id === "1" &&
+          !workspaceChanged &&
+          requestIntent === undefined
+        ) {
+          requestIntent = await abortable(
+            GeminiProvider.classifyRequestIntent(args.message, args.signal),
+            args.signal,
+          );
+          mutationRequired = requestIntent !== "informational";
+        }
+
+        const completionAction =
+          args.id === "1"
+            ? workspaceCompletionAction({
+                mutationRequired,
+                workspaceChanged,
+                previousRetries: noChangeRetries,
+              })
+            : "accept";
         if (!hasToolCall && completionAction !== "accept") {
           rejectedProseCompletion = true;
 
@@ -720,103 +863,170 @@ export class GeminiProvider {
         // Do not expose a tutorial-style answer that failed the implementation
         // contract. Only stream text from a valid turn.
         if (!rejectedProseCompletion && !hasToolCall && withheldTurnText) {
-          const finalMessage = mutationRequired
-            ? await abortable(
-                GeminiProvider.rewriteCompletionMessage({
-                  userRequest: args.message,
-                  draft: withheldTurnText,
-                  workspaceChanged,
-                  runtimeVerified,
-                }),
-                args.signal,
-              )
-            : withheldTurnText;
+          const rawMessage = withheldTurnText.trim();
+          const finalMessage =
+            mutationRequired || workspaceChanged
+              ? await abortable(
+                  GeminiProvider.rewriteCompletionMessageAgent({
+                    userRequest: args.message,
+                    draft: withheldTurnText,
+                    workspaceChanged,
+                    runtimeVerified,
+                  }),
+                  args.signal,
+                )
+              : withheldTurnText;
           args.handler.onChunk?.({
             type: "message",
             response: finalMessage,
           });
-          summary += ` ${finalMessage}`;
+          rawFinalOutput += `${rawFinalOutput ? "\n\n" : ""}${rawMessage}`;
+          finalOutput += `${finalOutput ? "\n\n" : ""}${finalMessage.trim()}`;
         }
       }
 
-      let history = GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
+      const history = GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
 
+      // Sub-agents persist their own terminal record and return to the merger.
       if (args.id !== "1") {
+        if (runStatus === "RUNNING") runStatus = "SUCCEEDED";
+        await prisma.conversationHistory.update({
+          where: { id: conversationRecord.id },
+          data: {
+            status: runStatus,
+            completed: true,
+            output:
+              runStatus === "SUCCEEDED" ? finalOutput.trim() || null : null,
+            rawOutput:
+              runStatus === "SUCCEEDED" ? rawFinalOutput || null : null,
+            errorMessage: runError,
+          },
+        });
         return {
-          history: history,
-          id: args?.id ?? "",
-          summary: summary,
+          history,
+          id: args.id,
+          status: runStatus,
+          summary: finalOutput.trim() || runError || "",
         };
       }
 
-      if (history.length > 0) {
-        const sessionTokens =
-          await GeminiProvider.geminiClient.models.countTokens({
-            model: "gemini-2.5-flash",
-            contents: history,
-          });
+      if (runStatus === "RUNNING") runStatus = "SUCCEEDED";
 
-        if ((sessionTokens?.totalTokens ?? 0) > 1000) {
-          let { contextedCount, history: newHistory } =
-            await GeminiProvider.contextualiseChat(
-              history,
-              this.sessionKey,
-              this.projectId,
-            );
-          if (contextedCount >= 3) {
-            let sessionSummary = await GeminiProvider.summariseChat(history);
-
-            GeminiProvider.sessions[this.sessionKey] = {
-              ...this.createNewSession({
-                newSystemPrompt: sessionSummary,
-              }),
-              contextualiseCount: 0,
-            };
-          } else {
-            GeminiProvider.sessions[this.sessionKey] = {
-              ...this.createNewSession({
-                history: newHistory,
-              }),
-              contextualiseCount: ++contextedCount,
-            };
-          }
-        }
-
-        const sessionTokensAfter =
-          await GeminiProvider.geminiClient.models.countTokens({
-            model: "gemini-2.5-flash",
-            contents: history,
-          });
-
-        console.log("SESSION TOKENS:", sessionTokensAfter.totalTokens);
-      }
-
+      // Save both the polished UI response and untouched Gemini completion.
       await prisma.conversationHistory.update({
         where: {
-          id: dbConverstaionId!.id,
+          id: conversationRecord.id,
         },
         data: {
+          status: runStatus,
           completed: true,
-          output: summary,
+          output: runStatus === "SUCCEEDED" ? finalOutput.trim() || null : null,
+          rawOutput: runStatus === "SUCCEEDED" ? rawFinalOutput || null : null,
+          errorMessage: runError,
         },
       });
 
+      // Compact long successful histories without changing the completed run.
+      if (history.length > 0) {
+        try {
+          const sessionTokens =
+            await GeminiProvider.geminiClient.models.countTokens({
+              model: "gemini-2.5-flash",
+              contents: history,
+            });
+
+          if ((sessionTokens?.totalTokens ?? 0) > 1000) {
+            const { contextedCount, history: newHistory } =
+              GeminiProvider.contextualiseChat(
+                history,
+                this.sessionKey,
+                this.projectId,
+              );
+            const session = GeminiProvider.sessions[this.sessionKey]!;
+            if (contextedCount >= 3) {
+              const sessionSummary = await GeminiProvider.summariseChat(
+                newHistory,
+                session.persistentSummary,
+              );
+
+              await prisma.agentMemory.upsert({
+                where: { projectId: this.projectId },
+                create: {
+                  projectId: this.projectId,
+                  summary: sessionSummary,
+                  summarizedThroughHistoryId: conversationRecord.id,
+                },
+                update: {
+                  summary: sessionSummary,
+                  summarizedThroughHistoryId: conversationRecord.id,
+                },
+              });
+
+              GeminiProvider.sessions[this.sessionKey] = {
+                ...this.createNewSession({
+                  newSystemPrompt: sessionSummary,
+                }),
+                contextualiseCount: 0,
+                persistentSummary: sessionSummary,
+                summarizedThroughHistoryId: conversationRecord.id,
+              };
+            } else {
+              GeminiProvider.sessions[this.sessionKey] = {
+                ...this.createNewSession({
+                  newSystemPrompt: session.persistentSummary,
+                  history: newHistory,
+                }),
+                contextualiseCount: contextedCount + 1,
+                persistentSummary: session.persistentSummary,
+                summarizedThroughHistoryId: session.summarizedThroughHistoryId,
+              };
+            }
+          }
+
+          const activeHistory =
+            GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
+          const sessionTokensAfter =
+            await GeminiProvider.geminiClient.models.countTokens({
+              model: "gemini-2.5-flash",
+              contents: activeHistory,
+            });
+
+          console.log("SESSION TOKENS:", sessionTokensAfter.totalTokens);
+        } catch (memoryError) {
+          // The user-visible run has already succeeded and its raw turn is in
+          // ConversationHistory. A failed optimization must not rewrite that
+          // successful run as an agent failure.
+          console.error(
+            "Unable to compact persistent agent memory:",
+            memoryError,
+          );
+        }
+      }
+
       // GeminiProvider.sessions[this.projectId]!.chat = GeminiProvider.sessions[this.projectId]!.chat;
 
-      args.handler.onFinish && args.handler.onFinish();
+      args.handler.onFinish?.();
       return {
         history: history,
-        id: args?.id ?? "",
-        summary: summary,
+        id: args.id,
+        status: runStatus,
+        summary: finalOutput.trim() || runError || "",
       };
     } catch (error) {
       if (error instanceof AgentRunCancelledError) {
         const stoppedMessage = "Generation stopped by user.";
-        summary += ` ${stoppedMessage}`;
-        if (dbConverstaionId) {
+        runStatus = "CANCELLED";
+        runError = stoppedMessage;
+        if (conversationRecord) {
           await prisma.conversationHistory.update({
-            where: { id: dbConverstaionId.id },
-            data: { completed: true, output: summary },
+            where: { id: conversationRecord.id },
+            data: {
+              status: runStatus,
+              completed: true,
+              output: null,
+              rawOutput: null,
+              errorMessage: runError,
+            },
           });
         }
         args.handler.onChunk?.({ type: "stopped", response: stoppedMessage });
@@ -825,16 +1035,38 @@ export class GeminiProvider {
           history:
             GeminiProvider.sessions[this.sessionKey]?.chat.getHistory() ?? [],
           id: args.id,
-          summary,
+          status: runStatus,
+          summary: stoppedMessage,
         };
       }
       console.log(error);
+      if (conversationRecord) {
+        const errorMessage =
+          error instanceof Error ? error.message : "The agent run failed.";
+        await prisma.conversationHistory.update({
+          where: { id: conversationRecord.id },
+          data: {
+            status: "FAILED",
+            completed: true,
+            output: null,
+            rawOutput: null,
+            errorMessage,
+          },
+        });
+      }
       throw error;
+    } finally {
+      if (conversationRecord) {
+        subAgentRegistry.clearRun({
+          projectId: this.projectId,
+          parentRunId: String(conversationRecord.id),
+        });
+      }
     }
   }
 
   public async agentSync(args: { id: string; message: string }) {
-    return await this.agentLoop({
+    return this.agentLoop({
       message: args.message,
       id: args.id,
       handler: {},
@@ -845,232 +1077,32 @@ export class GeminiProvider {
     id: string;
     message: string;
     signal?: AbortSignal;
-  }) {
-    try {
-      let controller: ReadableStreamDefaultController<any>;
+  }): AsyncGenerator<AgentChunk> {
+    let controller!: ReadableStreamDefaultController<AgentChunk>;
+    const stream = new ReadableStream<AgentChunk>({
+      start(value) {
+        controller = value;
+      },
+    });
 
-      const stream = new ReadableStream({
-        start(c) {
-          controller = c;
-        },
-      });
+    void this.agentLoop({
+      message: args.message,
+      id: args.id,
+      signal: args.signal,
+      handler: {
+        onChunk: (chunk) => controller.enqueue(chunk),
+        onFinish: () => controller.close(),
+      },
+    }).catch((error) => controller.error(error));
 
-      let onChunk = (args: { type: string; response: any; uuid?: string }) => {
-        controller.enqueue(args);
-      };
-
-      let onFinish = () => {
-        controller.close();
-      };
-
-      void this.agentLoop({
-        message: args.message,
-        id: args.id,
-        signal: args.signal,
-        handler: {
-          onChunk: onChunk,
-          onFinish: onFinish,
-        },
-      }).catch((error) => controller.error(error));
-
-      let reader = stream.getReader();
-      while (true) {
-        let { done, value } = await reader.read();
-        if (done) {
-          console.log("Agent is done");
-          break;
-        }
-        yield value;
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        console.log("Agent is done");
+        return;
       }
-    } catch (error) {
-      throw error;
+      yield value;
     }
   }
 }
-
-// let session: {
-//   [projectId: string]: { state: "WAITING" | "OPEN"; chat: Chat };
-// } = {};
-
-// const geminiClient = new GoogleGenAI({
-//   vertexai: true,
-//   project: process.env["PROJECT_ID"]!,
-// });
-
-// export const geminiAgent = async (args: {
-//   id?: string;
-//   prompt: string;
-//   projectId: string;
-//   systemPrompt: string;
-//   onComplete?: (args: { history: any; summary: string; id: string }) => void;
-// }) => {
-// const chatSession = session[args.projectId]
-//   ? session[args.projectId]?.chat
-//   : geminiClient.chats.create({
-//       model: "gemini-2.5-flash",
-//       config: {
-//         systemInstruction:
-//           args.systemPrompt !== ""
-//             ? args.systemPrompt
-//             : `
-//               Working directory is './projects'. Whatever you create or read, it should be done in ./projects directory only.
-//               You are a senior software engineering agent. Analyse the input given by the user correctly and only act based on what has user told you to do.
-//               Complete the user's objective with minimal supervision while maintaining correctness and safety and using the approapriate tolos.
-//               There are bunch of tools available for you to use, use them wherever you deem it suitable, but don't use tools unnecessarily.
-//               On every user message figure out if the task specifed in it can be broken into small steps, if it can be then use the createTaskPlan to create a plan for the task. Don't break the task in too many small tasks, keep the considerably broad like create this file, add this functionality.
-//               You can create agents and spawn sub-task to them, if you want to break a task into multiple pieces or if you want to use agent for steps of plan created by createTaskPlan.
-//             `,
-//         //             Use takeUserInput tool if you want to ask anything to the user.
-
-//         toolConfig: {
-//           functionCallingConfig: {
-//             mode: FunctionCallingConfigMode.AUTO,
-//           },
-//         },
-//         tools: [
-//           {
-//             functionDeclarations: Object.entries(tools).map(
-//               ([_name, tool], _index) => tool.declaration,
-//             ),
-//           },
-//         ],
-//       },
-//     });
-
-// newMessages.push({
-//   message: args.prompt,
-// });
-
-// let resolveHistory = (history: Content[]): void => {};
-// let finalHistory = new Promise<Content[]>(
-//   (resolve) => (resolveHistory = resolve),
-// );
-
-// const textStream = (async function* (): AsyncGenerator<{
-//   type: string;
-//   response: Array<string> | string;
-//   uuid?: string;
-// }> {
-// try {
-//   let hasToolCall = true;
-//   while (hasToolCall) {
-//     for (let newMessage of newMessages) {
-//       let streamResponse;
-//       try {
-//         console.log(args.id, " - MESSAGE TO LLM : ", newMessage);
-//         streamResponse = await chatSession!.sendMessageStream(newMessage);
-//       } catch (error: any) {
-//         console.log(args.id, " - ", error);
-//         const errorMessage =
-//           error.status === 429
-//             ? "Limit reached, try after a minute"
-//             : `Error: ${error.message || JSON.stringify(error)}`;
-//         yield { type: "error", response: errorMessage };
-//         hasToolCall = false;
-//         break;
-//       }
-//       for await (let response of streamResponse) {
-//         hasToolCall = false;
-//         if (response.functionCalls && response.functionCalls.length > 0) {
-//           let functionCallResponses: PartListUnion = [];
-//           for (let functionCall of response.functionCalls) {
-//             console.log("------------", functionCall.name);
-//             try {
-//               const tool = tools[functionCall.name as keyof typeof tools];
-//               if (!tool) {
-//                 functionCallResponses.push({
-//                   functionResponse: {
-//                     ...(functionCall.id && { id: functionCall.id }),
-//                     name: functionCall.name,
-//                     response: {
-//                       output: "No such tool exist",
-//                     },
-//                   },
-//                 });
-//                 continue;
-//               }
-//               if (tool.declaration.name == "createSubAgent") {
-//                 console.log("creating sub agents", functionCall.args?.id);
-//                 // let subAgentHistory = await geminiAgent({
-//                 //   id: functionCall.args?.id as string,
-//                 //   prompt: functionCall.args?.systemPrompt as string,
-//                 //   systemPrompt: functionCall.args?.systemPrompt as string,
-//                 //   projectId: args.projectId,
-//                 // });
-//                 // subAgentToolCalls.push(subAgentHistory.finalHistory);
-//               }
-//               const output = tool.executable({
-//                 ...(functionCall.args as any),
-//                 projectId: args.projectId,
-//               }) as {
-//                 response: string;
-//                 yield?: {
-//                   type: string;
-//                   response: any;
-//                   resolver?: any;
-//                   uuid?: string;
-//                 };
-//               };
-//               if (output.yield) {
-//                 yield {
-//                   type: output.yield.type,
-//                   response: output.yield.response,
-//                   uuid: output.yield.uuid,
-//                 };
-//                 if (output.yield?.resolver)
-//                   output.response = await output.yield.resolver;
-//               }
-//               functionCallResponses.push({
-//                 functionResponse: {
-//                   ...(functionCall.id && { id: functionCall.id }),
-//                   name: functionCall.name,
-//                   response: {
-//                     output: output.response,
-//                   },
-//                 },
-//               });
-//             } catch (error: any) {
-//               functionCallResponses.push({
-//                 functionResponse: {
-//                   ...(functionCall.id && { id: functionCall.id }),
-//                   name: functionCall.name,
-//                   response: {
-//                     output:
-//                       error instanceof Error
-//                         ? error.message
-//                         : JSON.stringify(error),
-//                   },
-//                 },
-//               });
-//             }
-//             hasToolCall = true;
-//           }
-//           // do we need to have weights in agents?
-//           // if (subAgentToolCalls.length)
-//           //   Promise.all(subAgentToolCalls).then(async (subSgentResults) => {
-//           //     console.log("Sub-agent response");
-//           //   });
-//           session[args.projectId] = {
-//             chat: chatSession!,
-//             state: "OPEN",
-//           };
-//           newMessages.push({ message: functionCallResponses });
-//         }
-//       }
-//     }
-//   }
-// } finally {
-//   resolveHistory(chatSession!.getHistory());
-//   if (args.onComplete) {
-//     args.onComplete({
-//       id: args.id ?? "",
-//       history: finalHistory,
-//       summary: "",
-//     });
-//   }
-//   return;
-// }
-//   })();
-
-//   return { textStream, finalHistory, id: args.id ?? "" };
-// };

@@ -1,44 +1,18 @@
 import { type FunctionDeclaration } from "@google/genai";
-import { consumeSubAgent, queueMerge, registerSubAgent } from "../helper";
+import { subAgentRegistry } from "../subAgents/registry";
 import path from "node:path";
-import { execSync } from "node:child_process";
-import { Tools, type ToolContext, type ToolResult } from "../types/tools";
-
-export const mergeWorktree = (args: {
-  id: string;
-  targetBranch: string;
-  mainWorktreePath: string;
-}): Promise<any> => {
-  const branchName = `agent-${args.id}`;
-  const worktreePath = path.resolve(
-    args.mainWorktreePath,
-    "../worktrees",
-    branchName,
-  );
-
-  return queueMerge(async () => {
-    try {
-      execSync(`git checkout ${args.targetBranch}`, {
-        cwd: args.mainWorktreePath,
-      });
-      execSync(`git merge ${branchName}`, { cwd: args.mainWorktreePath });
-      execSync(`git worktree remove "${worktreePath}"`, {
-        cwd: args.mainWorktreePath,
-      });
-      execSync(`git branch -d ${branchName}`, { cwd: args.mainWorktreePath });
-      return { status: "MERGED" };
-    } catch (error: any) {
-      const isConflict = error.message?.includes("CONFLICT");
-      const mergeError = new Error(error.message);
-      (mergeError as any).status = isConflict ? "MERGE_CONFLICT" : "ERROR";
-      throw mergeError;
-    }
-  });
-};
+import { execFileSync } from "node:child_process";
+import { type ToolContext, type ToolResult } from "../types/tools";
+import { activityTarget } from "../toolActivity";
 
 export const agentTool = {
   createSubAgent: {
-    identifier: Tools.CREATE_SUB_AGENT,
+    activity: {
+      started: (args: { id: string }) =>
+        `Starting focused task ${activityTarget(args.id, "for a sub-agent")}`,
+      completed: (args: { id: string }) =>
+        `Started focused task ${activityTarget(args.id, "for a sub-agent")}`,
+    },
     declaration: {
       name: "createSubAgent",
       description: "Create a sub-agent and spawn off a dedicated task to it",
@@ -84,20 +58,16 @@ export const agentTool = {
       );
 
       try {
-        execSync(
-          `git worktree add -b ${branchName} "${worktreePath}" ${base}`,
-          {
-            cwd: context.cwd,
-            stdio: "pipe",
-          },
+        execFileSync(
+          "git",
+          ["worktree", "add", "-b", branchName, worktreePath, base],
+          { cwd: context.cwd, stdio: "pipe" },
         );
       } catch (error: any) {
         return {
           response: `Failed to provision worktree: ${error.message}`,
         };
       }
-
-      registerSubAgent(args.id);
 
       return {
         response: "agent created",
@@ -111,11 +81,16 @@ export const agentTool = {
     },
   },
   waitForSubAgent: {
-    identifier: Tools.WAITING_FOR_SUB_AGENT,
+    activity: {
+      started: (args: { id: string }) =>
+        `Waiting for focused task ${activityTarget(args.id, "from a sub-agent")}`,
+      completed: (args: { id: string }) =>
+        `Received result from focused task ${activityTarget(args.id, "from a sub-agent")}`,
+    },
     declaration: {
       name: "waitForSubAgent",
       description:
-        "If we need to wait for a sub-agent when we need it to finish it's task before we move on",
+        "Wait for a previously created sub-agent to finish and for its worktree to be merged, then return the exact merge result.",
       parametersJsonSchema: {
         type: "object",
         properties: {
@@ -129,21 +104,28 @@ export const agentTool = {
     } as FunctionDeclaration,
     executable: async (
       args: { id: string },
-      _context: ToolContext,
+      context: ToolContext,
     ): Promise<ToolResult> => {
-      let response = {
-        status: "ERROR : NO AGENT WITH THAT ID FOUND",
-        id: args.id,
-      };
       try {
-        const result = await consumeSubAgent(args.id);
+        const result = await subAgentRegistry.waitFor({
+          projectId: context.databaseProjectId,
+          parentRunId: context.agentRunId,
+          id: args.id,
+        });
+        const response = result ?? {
+          status: "ERROR" as const,
+          id: args.id,
+          error: "No sub-agent with that ID exists for this agent run.",
+        };
 
         return {
-          response: result ? { ...result, id: args.id } : response,
-          yield: {
-            type: "waitingForAgent",
-            response: args.id,
-          },
+          response,
+          ...(!result && {
+            yield: {
+              type: "subAgentFailed",
+              response,
+            },
+          }),
           ...(result?.status === "MERGED" && {
             effects: {
               workspaceChanged: true,
@@ -152,22 +134,26 @@ export const agentTool = {
           }),
         };
       } catch (error) {
+        const response = {
+          status: "ERROR" as const,
+          id: args.id,
+          error: error instanceof Error ? error.message : String(error),
+        };
         return {
-          response: {
-            status: "ERROR",
-            id: args.id,
-            error: error instanceof Error ? error.message : String(error),
-          },
+          response,
           yield: {
-            type: "waitingForAgent",
-            response: args.id,
+            type: "subAgentFailed",
+            response,
           },
         };
       }
     },
   },
   getCurrentWorkspace: {
-    identifier: Tools.GET_CURRENT_WORKSPACE,
+    activity: {
+      started: "Checking the project workspace",
+      completed: "Checked the project workspace",
+    },
     declaration: {
       name: "getCurrentWorkspace",
       description:

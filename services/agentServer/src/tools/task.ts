@@ -1,9 +1,11 @@
 import { type FunctionDeclaration } from "@google/genai";
-import { Tools } from "../types/tools";
 
 export const taskTool = {
   createTaskPlan: {
-    identifier: Tools.CREATE_PLAN,
+    activity: {
+      started: "Planning the implementation steps",
+      completed: "Planned the implementation steps",
+    },
     declaration: {
       name: "createTaskPlan",
       description:
@@ -36,18 +38,62 @@ export const taskTool = {
         required: ["taskList"],
       },
     } as FunctionDeclaration,
-    executable: (
-      args: { taskList: Array<{ id: string; task: string }> },
-      _context: { cwd: string },
-    ) => {
-      return {
-        response: "continue",
-        yield: { type: "plan", response: args.taskList },
-      };
+    executable: (args: {
+      taskList: Array<{ id: string; task: string }>;
+    }) => ({
+      response: "continue",
+      yield: { type: "plan", response: args.taskList },
+    }),
+  },
+  addTasksToPlan: {
+    activity: {
+      started: "Adding newly discovered implementation steps",
+      completed: "Added newly discovered implementation steps",
     },
+    declaration: {
+      name: "addTasksToPlan",
+      description:
+        "Append newly discovered, non-duplicate steps to the task plan already created for this request. Do not repeat existing task IDs.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          taskList: {
+            type: "array",
+            description:
+              "One or more additional outcome-oriented implementation steps in execution order.",
+            minItems: 1,
+            maxItems: 6,
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "A new stable short identifier for the step.",
+                },
+                task: {
+                  type: "string",
+                  description: "Concrete implementation outcome for the step.",
+                },
+              },
+              required: ["id", "task"],
+            },
+          },
+        },
+        required: ["taskList"],
+      },
+    } as FunctionDeclaration,
+    executable: (args: {
+      taskList: Array<{ id: string; task: string }>;
+    }) => ({
+      response: "continue",
+      yield: { type: "planAppend", response: args.taskList },
+    }),
   },
   informCompletedTaskFromTaskPlan: {
-    identifier: Tools.INFORM_TASK_COMPLETION,
+    activity: {
+      started: "Finishing an implementation step",
+      completed: "Finished an implementation step",
+    },
     declaration: {
       name: "informCompletedTaskFromTaskPlan",
       description:
@@ -63,11 +109,9 @@ export const taskTool = {
         required: ["id"],
       },
     } as FunctionDeclaration,
-    executable: (args: { id: string }, _context: { cwd: string }) => {
-      return {
-        response: "DONE",
-        yield: { type: "planComplete", response: args.id },
-      };
-    },
+    executable: (args: { id: string }) => ({
+      response: "DONE",
+      yield: { type: "planComplete", response: args.id },
+    }),
   },
 };

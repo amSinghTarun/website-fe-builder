@@ -1,4 +1,4 @@
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 
 const projectsBaseUrl = (
   process.env.PROJECTS_BASE_URL?.trim() || "http://project.tarun.co"
@@ -16,20 +16,11 @@ export function projectRuntimeRoutes(databaseProjectId: string) {
   };
 }
 
-type RuntimeFetcher = (
-  input: string,
-  init?: RequestInit,
-) => Promise<Response>;
-
-async function isReachable(
-  url: string,
-  fetcher: RuntimeFetcher,
-  init?: RequestInit,
-): Promise<boolean> {
+async function isReachable(url: string, init?: RequestInit): Promise<boolean> {
   try {
-    const response = await fetcher(url, {
+    const response = await fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(2000),
     });
     return response.ok;
   } catch {
@@ -37,26 +28,22 @@ async function isReachable(
   }
 }
 
-export async function getProjectRuntimeStatus(
-  databaseProjectId: string,
-  fetcher: RuntimeFetcher = fetch,
-) {
+export async function getProjectRuntimeStatus(databaseProjectId: string) {
   const routes = projectRuntimeRoutes(databaseProjectId);
   const [workspaceReady, agentReady] = await Promise.all([
     isReachable(
       `http://${routes.runtimeId}-workspace-service.default.svc.cluster.local:5173${routes.workspacePath}`,
-      fetcher,
       { headers: { Host: new URL(projectsBaseUrl).host } },
     ),
     isReachable(
       `http://${routes.runtimeId}-agent-service.default.svc.cluster.local:3000/health`,
-      fetcher,
     ),
   ]);
 
   return {
     ...routes,
-    status: workspaceReady && agentReady ? ("ready" as const) : ("starting" as const),
+    status:
+      workspaceReady && agentReady ? ("ready" as const) : ("starting" as const),
     workspaceReady,
     agentReady,
   };

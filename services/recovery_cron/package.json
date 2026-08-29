@@ -17,7 +17,7 @@
   "dependencies": {
     "@google-cloud/storage": "^7.21.0",
     "@sky/db": "workspace:*",
-    "@sky/runtime-id": "workspace:*",
+    "@sky/common": "workspace:*",
     "archiver": "^8.0.0",
     "axios": "^1.18.1",
     "croner": "^10.0.1",

@@ -32,14 +32,14 @@ ENV USE_GKE_GCLOUD_AUTH_PLUGIN=True
 COPY ./package.json .
 
 COPY --parents ./packages/db/package.json ./packages/db/bun.lock ./
-COPY --parents ./packages/runtime-id/package.json ./
+COPY --parents ./packages/common/package.json ./
 COPY --parents ./apps/backend/package.json ./apps/backend/bun.lock ./
 
 RUN bun install
 
 COPY --parents ./apps/backend ./
 COPY --parents ./packages/db ./
-COPY --parents ./packages/runtime-id ./
+COPY --parents ./packages/common ./
 
 WORKDIR /app/packages/db
 

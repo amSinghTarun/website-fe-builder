@@ -1,4 +1,4 @@
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 import { workspacePodAffinity } from "../../workspace-affinity";
 import { runtimeImage } from "../../runtime-image";
 
@@ -18,7 +18,6 @@ export const recoveryDeploymentSpec = (databaseProjectId: string) => {
     spec: {
       replicas: 1,
       strategy: { type: "Recreate" },
-      // based on this selector, this deployment will find and combine any other pod/replica running with same metadata
       selector: {
         matchLabels: {
           app: `${runtimeId}-recovery-cron`,
@@ -31,6 +30,7 @@ export const recoveryDeploymentSpec = (databaseProjectId: string) => {
           },
         },
         spec: {
+          restartPolicy: "Always",
           serviceAccountName: "k8s-service-account",
           affinity: workspacePodAffinity(runtimeId),
           containers: [

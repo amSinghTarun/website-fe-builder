@@ -1,5 +1,7 @@
 export type FrontendLibrary = "react" | "vue";
 
+type WorkspaceCompletionAction = "accept" | "retry" | "fail";
+
 export function parseFrontendLibrary(value: string): FrontendLibrary {
   const normalized = value.trim().toLowerCase();
   if (normalized === "react" || normalized === "vue") return normalized;
@@ -31,8 +33,9 @@ IMPLEMENTATION RULES
 - Verify changed applications through the runtime. Repair syntax, import, dependency, and runtime errors before declaring completion.
 - Do not claim that files were created or a task was completed unless the relevant tool calls succeeded.
 - Ask the user for input with takeUserInput only when a material product decision cannot be inferred safely.
-- For a new page, redesign, or multi-component feature, call createTaskPlan before implementation. Keep it to 3-6 outcome-oriented steps and mark every completed step. Skip it for a genuinely trivial one-file edit.
+- Use createTaskPlan when an ordered 3-6 step plan would materially help execute a complex request. Decide based on the task's actual complexity, and mark every step completed when a plan is used. If genuinely new work is discovered later, extend the same plan with addTasksToPlan instead of replacing it. Skip planning for straightforward changes.
 - Use sub-agents only for independent, non-overlapping work that can start from committed repository state. Do not delegate routine single-page work or a final visual review of uncommitted changes.
+- Launch independent sub-agents before waiting for any one of them. Their outstanding results are collected automatically before final completion; call waitForSubAgent only when you need a particular result earlier to decide the next step.
 - Sub-agents must obey this same frontend-only and ${frameworkName}-only contract.
 
 PRODUCT AND VISUAL QUALITY BAR
@@ -65,47 +68,13 @@ FINAL RESPONSE
 ${additionalContext?.trim() ? `\nADDITIONAL TASK CONTEXT\n${additionalContext.trim()}` : ""}`;
 }
 
-export function requiresWorkspaceMutation(message: string): boolean {
-  if (
-    /\b(create|craete|build|make|implement|add|change|update|modify|fix|repair|remove|delete|redesign|style|generate|genrate|develop|replace|refactor)\b/i.test(
-      message,
-    )
-  ) {
-    return true;
-  }
-
-  // Most prompts in the builder are terse product descriptions (for example,
-  // "A kanban board"). Only clearly informational prompts may finish as prose.
-  return !/^\s*(what|why|how|where|when|who|explain|describe|tell me|does|is|are)\b/i.test(
-    message,
-  );
-}
-
-export function requiresTaskPlan(message: string): boolean {
-  if (!requiresWorkspaceMutation(message)) return false;
-
-  if (/\b(redesign|overhaul|rebuild|from scratch)\b/i.test(message)) {
-    return true;
-  }
-
-  return /\b(app|application|website|site|page|dashboard|board|tracker|portal|landing|portfolio|store|shop|editor|calendar|workspace)\b/i.test(
-    message,
-  );
-}
-
-export type WorkspaceCompletionAction = "accept" | "retry" | "fail";
-
 export function workspaceCompletionAction(args: {
-  message: string;
+  mutationRequired: boolean;
   workspaceChanged: boolean;
   previousRetries: number;
 }): WorkspaceCompletionAction {
-  if (!requiresWorkspaceMutation(args.message) || args.workspaceChanged) {
+  if (!args.mutationRequired || args.workspaceChanged) {
     return "accept";
   }
   return args.previousRetries < 2 ? "retry" : "fail";
 }
-
-// Kept for callers that do not yet have project metadata. Runtime agents use
-// createFrontendSystemPrompt with the project's persisted library.
-export const defaultSystemPrompt = createFrontendSystemPrompt("react");

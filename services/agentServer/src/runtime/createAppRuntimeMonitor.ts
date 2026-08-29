@@ -1,9 +1,6 @@
 import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
-import { toRuntimeId } from "@sky/runtime-id";
-import {
-  AppRuntimeMonitor,
-  type AppRuntimeRef,
-} from "./AppRuntimeMonitor";
+import { toRuntimeId } from "@sky/common";
+import { AppRuntimeMonitor, type AppRuntimeRef } from "./AppRuntimeMonitor";
 
 export interface ConfiguredAppRuntimeMonitor {
   monitor: AppRuntimeMonitor;
@@ -12,7 +9,7 @@ export interface ConfiguredAppRuntimeMonitor {
 
 let configuredMonitor: ConfiguredAppRuntimeMonitor | undefined;
 
-export function getConfiguredAppRuntimeMonitor():
+export function getConfiguredAppRuntimeMonitor(databaseProjectId: string):
   | ConfiguredAppRuntimeMonitor
   | undefined {
   if (configuredMonitor) return configuredMonitor;
@@ -20,10 +17,6 @@ export function getConfiguredAppRuntimeMonitor():
   if (process.env["APP_RUNTIME_MONITOR_ENABLED"]?.trim() === "false") {
     return undefined;
   }
-
-  const databaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
-
-  if (!databaseProjectId) return undefined;
 
   const runtimeId = toRuntimeId(databaseProjectId);
 
@@ -48,8 +41,7 @@ export function getConfiguredAppRuntimeMonitor():
       workspacePath:
         process.env["WORKSPACE_PATH"]?.trim() || "/user-app/my-app",
       podLabelSelector: `app=${runtimeId}-workspace`,
-      containerName:
-        process.env["WORKSPACE_CONTAINER"]?.trim() || "node",
+      containerName: process.env["WORKSPACE_CONTAINER"]?.trim() || "node",
       serviceName,
       servicePort: Number.isFinite(servicePort) ? servicePort : 5173,
       httpHost:

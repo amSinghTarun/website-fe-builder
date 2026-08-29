@@ -3,23 +3,16 @@ import fs from "node:fs/promises";
 import { prisma } from "@sky/db";
 import axios from "axios";
 import path from "node:path";
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export const recovery = async () => {
-  const pathToVolume =
-    process.env.WORKSPACE_PATH?.trim() || "/user-app/my-app";
-  const databaseProjectId = process.env.DATABASE_PROJECT_ID?.trim();
+export const recovery = async (databaseProjectId: string) => {
+  const pathToVolume = process.env.WORKSPACE_PATH?.trim() || "/user-app/my-app";
   const namespace = process.env.APP_NAMESPACE?.trim() || "default";
   const agentPort = Number(process.env.AGENT_PORT ?? "3000");
-
-  if (!databaseProjectId) {
-    console.error("Recovery disabled: DATABASE_PROJECT_ID is required");
-    return;
-  }
 
   const runtimeId = toRuntimeId(databaseProjectId);
   const restoreReadyPath = path.join(

@@ -17,13 +17,13 @@ COPY ./package.json ./
 
 COPY --parents ./services/agentServer/package.json ./
 COPY --parents ./packages/db/package.json ./packages/db/bun.lock ./
-COPY --parents ./packages/runtime-id/package.json ./
+COPY --parents ./packages/common/package.json ./
 
 RUN bun install
 
 COPY ./services/agentServer ./services/agentServer
 COPY ./packages/db ./packages/db
-COPY ./packages/runtime-id ./packages/runtime-id
+COPY ./packages/common ./packages/common
 
 WORKDIR /app/packages/db
 

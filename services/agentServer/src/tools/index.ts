@@ -6,8 +6,7 @@ import { agentTool } from "./agent";
 import { contextTools } from "./context";
 import type { AgentTool } from "../types/tools";
 
-export { mergeWorktree } from "./agent";
-export let tools = {
+export const tools = {
   ...inputTools,
   ...bashTool,
   ...fileTools,
@@ -15,3 +14,10 @@ export let tools = {
   ...taskTool,
   ...agentTool,
 } satisfies Record<string, AgentTool<any>>;
+
+export function getTool(
+  name: string | null | undefined,
+): AgentTool<any> | undefined {
+  if (!name) return undefined;
+  return Object.values(tools).find((tool) => tool.declaration.name === name);
+}

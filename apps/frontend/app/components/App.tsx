@@ -340,6 +340,7 @@ export function App() {
     let assistantStarted = false;
     let streamError: string | null = null;
     let streamStopped = false;
+    let streamBlocked = false;
     let buffer = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -393,6 +394,7 @@ export function App() {
       }
 
       if (chunk.type === "runtimeBlocked") {
+        streamBlocked = true;
         toast.error("The generated app is still unhealthy after automatic repairs.");
       }
 
@@ -443,7 +445,7 @@ export function App() {
 
     if (buffer.trim()) consumeEvent(buffer);
     if (streamError) throw new Error(streamError);
-    if (!assistantStarted && !streamStopped) {
+    if (!assistantStarted && !streamStopped && !streamBlocked) {
       setMessages((previous) => [
         ...previous,
         {
@@ -709,9 +711,23 @@ export function App() {
                         {m.message}
                       </div>
                     </div>
-                  ) : (
+                  ) : m.from === "assistant" ? (
                     <div key={m.id} className="w-full flex justify-start">
                       <div className="w-fit max-w-[85%] p-2 px-3 rounded-lg rounded-bl-none bg-zinc-900 text-zinc-200 text-sm">
+                        {m.message}
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={m.id} className="w-full flex justify-start">
+                      <div
+                        className={`w-fit max-w-[85%] rounded-lg border px-3 py-2 text-xs ${
+                          m.tone === "error"
+                            ? "border-red-900/70 bg-red-950/30 text-red-300"
+                            : m.tone === "warning"
+                              ? "border-amber-900/70 bg-amber-950/30 text-amber-300"
+                              : "border-zinc-800 bg-zinc-950 text-zinc-500"
+                        }`}
+                      >
                         {m.message}
                       </div>
                     </div>

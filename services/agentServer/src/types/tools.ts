@@ -1,32 +1,18 @@
 import type { FunctionDeclaration } from "@google/genai";
 
-export enum Tools {
-  CREATE_SUB_AGENT,
-  WAITING_FOR_SUB_AGENT,
-  GET_CURRENT_WORKSPACE,
-  EXECUTE_BASH,
-  READ_DIR,
-  READ_FILE,
-  CREATE_FILE,
-  DELETE_FILE,
-  UPDATE_FILE,
-  READ_CONTEXT_ARTIFACT,
-  TAKE_INPUT,
-  CREATE_PLAN,
-  INFORM_TASK_COMPLETION,
-}
-
 export interface ToolContext {
   cwd: string;
+  databaseProjectId: string;
+  agentRunId: string;
   signal?: AbortSignal;
 }
 
-export interface ToolEffects {
+interface ToolEffects {
   workspaceChanged?: boolean;
   runtimeMayChange?: boolean;
 }
 
-export interface ToolYield {
+interface ToolYield {
   type: string;
   response: unknown;
   resolver?: Promise<unknown>;
@@ -41,23 +27,20 @@ export interface ToolResult {
   branchName?: string;
 }
 
+export type ToolActivityPhase = "started" | "completed" | "failed";
+
+type ToolActivityText<TArgs> = string | ((args: TArgs) => string);
+
+interface ToolActivity<TArgs> {
+  started: ToolActivityText<TArgs>;
+  completed: ToolActivityText<TArgs>;
+}
+
 export interface AgentTool<TArgs = Record<string, unknown>> {
-  identifier: Tools;
   declaration: FunctionDeclaration;
+  activity: ToolActivity<TArgs>;
   executable: (
     args: TArgs,
     context: ToolContext,
   ) => ToolResult | Promise<ToolResult>;
-}
-
-export function normalizeToolResult(result: unknown): ToolResult {
-  if (result && typeof result === "object" && "response" in result) {
-    return result as ToolResult;
-  }
-
-  if (Buffer.isBuffer(result)) {
-    return { response: result.toString("utf-8") };
-  }
-
-  return { response: result == null ? "" : String(result) };
 }

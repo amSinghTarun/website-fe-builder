@@ -18,7 +18,7 @@
     "@kubernetes/client-node": "^1.4.0",
     "@scalar/fastify-api-reference": "^1.61.0",
     "@sky/db": "workspace:*",
-    "@sky/runtime-id": "workspace:*",
+    "@sky/common": "workspace:*",
     "bunqueue": "^2.8.23",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",

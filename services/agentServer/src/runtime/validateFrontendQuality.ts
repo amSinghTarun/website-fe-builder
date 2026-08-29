@@ -5,7 +5,7 @@ import {
   type WorkspaceFile,
 } from "./workspaceFiles";
 
-export interface FrontendQualityReview {
+interface FrontendQualityReview {
   passed: boolean;
   issues: string[];
 }
@@ -13,7 +13,7 @@ export interface FrontendQualityReview {
 const sourceExtension = /\.(?:css|scss|sass|less|js|jsx|ts|tsx|vue)$/i;
 const stylesheetExtension = /\.(?:css|scss|sass|less)$/i;
 
-export function reviewFrontendQuality(
+function reviewFrontendQuality(
   files: WorkspaceFile[],
 ): FrontendQualityReview {
   const sourceFiles = files.filter(

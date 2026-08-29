@@ -1,5 +1,5 @@
 import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 import {
   AgentRunCancelledError,
   abortable,

@@ -6,6 +6,7 @@ import {
 
 const implementationToolNames = new Set([
   "createTaskPlan",
+  "addTasksToPlan",
   "readDirectory",
   "readFileContent",
   "readContextArtifact",
@@ -13,14 +14,14 @@ const implementationToolNames = new Set([
   "updateFile",
   "deleteFile",
   "executeBash",
+  "createSubAgent",
 ]);
 
 export function createGeminiGenerationConfig(args: {
   systemInstruction: string;
   functionDeclarations: FunctionDeclaration[];
   abortSignal?: AbortSignal;
-  requireTaskPlan?: boolean;
-  requireWorkspaceTool?: boolean;
+  forceImplementationToolCall?: boolean;
 }): GenerateContentConfig {
   const allowedFunctionNames = args.functionDeclarations.flatMap(
     (declaration) =>
@@ -28,23 +29,19 @@ export function createGeminiGenerationConfig(args: {
         ? [declaration.name]
         : [],
   );
-  const requireWorkspaceTool =
-    args.requireWorkspaceTool === true && allowedFunctionNames.length > 0;
-  const requireTaskPlan =
-    args.requireTaskPlan === true &&
-    allowedFunctionNames.includes("createTaskPlan");
+  const forceImplementationToolCall =
+    args.forceImplementationToolCall === true &&
+    allowedFunctionNames.length > 0;
 
   return {
     systemInstruction: args.systemInstruction,
     tools: [{ functionDeclarations: args.functionDeclarations }],
     toolConfig: {
       functionCallingConfig: {
-        mode: requireTaskPlan || requireWorkspaceTool
+        mode: forceImplementationToolCall
           ? FunctionCallingConfigMode.ANY
           : FunctionCallingConfigMode.AUTO,
-        ...(requireTaskPlan
-          ? { allowedFunctionNames: ["createTaskPlan"] }
-          : requireWorkspaceTool && { allowedFunctionNames }),
+        ...(forceImplementationToolCall && { allowedFunctionNames }),
       },
     },
     ...(args.abortSignal && { abortSignal: args.abortSignal }),

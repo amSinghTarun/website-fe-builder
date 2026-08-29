@@ -1,9 +1,17 @@
 export const RUNTIME_ID_PREFIX = "sky-";
 
-/**
- * Converts the database project UUID into the prefix used by Kubernetes
- * resources and runtime routes.
- */
+export function requireDatabaseProjectId(
+  value = process.env["DATABASE_PROJECT_ID"],
+): string {
+  const databaseProjectId = value?.trim();
+
+  if (!databaseProjectId) {
+    throw new Error("DATABASE_PROJECT_ID is required");
+  }
+
+  return databaseProjectId;
+}
+
 export function toRuntimeId(databaseProjectId: string): string {
   const normalizedProjectId = databaseProjectId.trim();
 

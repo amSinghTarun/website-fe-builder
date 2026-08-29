@@ -1,5 +1,8 @@
 import { backupCron } from "./service";
 import { recovery } from "./service";
+import { requireDatabaseProjectId } from "@sky/common";
+
+const databaseProjectId = requireDatabaseProjectId();
 
 // RECOVERY
 // -----------------------------
@@ -16,10 +19,10 @@ import { recovery } from "./service";
     There should be an API which accept a tool calls and just loop through them.
     http://<target-service-name>.default.svc.cluster.local:<port>/<api-path>
 */
-await recovery();
+await recovery(databaseProjectId);
 
 // CRON
 // -----------------------------
 // create bucket if not exist
 // write the volume data in a object store
-backupCron();
+backupCron(databaseProjectId);

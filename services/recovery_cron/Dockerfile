@@ -12,20 +12,19 @@ FROM oven/bun:1
 
 WORKDIR /app
 
-ENV DATABASE_PROJECT_ID=""
 ENV DATABASE_URL=""
 
 COPY ./package.json ./
 
 COPY --parents ./services/recovery_cron/package.json ./services/recovery_cron/bun.lock ./
 COPY --parents ./packages/db/package.json ./
-COPY --parents ./packages/runtime-id/package.json ./
+COPY --parents ./packages/common/package.json ./
 
 RUN bun install
 
 COPY ./services/recovery_cron/ ./services/recovery_cron/
 COPY ./packages/db/ ./packages/db/
-COPY ./packages/runtime-id/ ./packages/runtime-id/
+COPY ./packages/common/ ./packages/common/
 
 WORKDIR /app/packages/db/
 

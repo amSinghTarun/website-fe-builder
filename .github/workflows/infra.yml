@@ -1,20 +1,14 @@
-# For auth
-# https://github.com/google-github-actions/auth/blob/main/README.md#direct-wif
-
-# authenticate to google cloud gcp from github actions using oidc and workload identity
-# https://medium.com/@prasad.reddy0708/authenticate-to-google-cloud-gcp-from-github-actions-using-oidc-and-workload-identity-federation-2a6c6b56c29f
-
-name: Deploy 
-run-name: Deploy Kubernetes manifests
+name: Infra
+run-name: Deploy Kubernetes infrastructure
 
 on:
-  workflow_run:
-    workflows: [service]
-    types: [completed]
+  push:
     branches: [main]
+    paths:
+      - 'k8s/infra/**'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  group: infra-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,143 +16,41 @@ permissions:
   id-token: write
 
 jobs:
-  job_1:
-    if: github.event.workflow_run.conclusion == 'success'
+  apply_infra:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
 
-      - uses: 'actions/checkout@v7'
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        
-      # Authenticate to GCP using Workload Identity Federation
       - name: Authenticate to Google Cloud
-        id: auth
         uses: google-github-actions/auth@v3
         with:
           token_format: "access_token"
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-          
-      # get kubernetes creds so that kubectl work
+
       - name: Get GKE Credentials
-        uses: 'google-github-actions/get-gke-credentials@v3'
+        uses: google-github-actions/get-gke-credentials@v3
         with:
           cluster_name: 'hundred-x-course'
           location: 'asia-southeast1'
 
-
-      # Create the secrets in k8s for other deployments to use
       - name: Create secret in main cluster
         env:
           JWT_SECRET_FROM_GITHUB: ${{ secrets.JWT_SECRET }}
-        run: |
-          jwt_secret="$JWT_SECRET_FROM_GITHUB"
-          if [ -z "$jwt_secret" ]; then
-            jwt_secret="$(kubectl get secret sky-secrets --namespace=default \
-              -o jsonpath='{.data.JWT_SECRET}' 2>/dev/null | base64 --decode || true)"
-          fi
-          if [ -z "$jwt_secret" ]; then
-            jwt_secret="$(openssl rand -hex 32)"
-          fi
+          DATABASE_URL_FROM_GITHUB: ${{ secrets.DATABASE_URL }}
+          GCP_PROJECT_ID_FROM_GITHUB: ${{ secrets.GCP_PROJECT_ID }}
+          POSTGRES_USER_FROM_GITHUB: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD_FROM_GITHUB: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB_FROM_GITHUB: ${{ secrets.POSTGRES_DB }}
+        run: ./scripts/github/infra/create_cluster_secret.sh
 
-          kubectl create secret generic sky-secrets --namespace=default \
-            --from-literal=DATABASE_URL="${{ secrets.DATABASE_URL }}" \
-            --from-literal=JWT_SECRET="$jwt_secret" \
-            --from-literal=GCP_PROJECT_ID="${{ secrets.GCP_PROJECT_ID }}" \
-            --from-literal=POSTGRES_USER="${{ secrets.POSTGRES_USER }}" \
-            --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
-            --from-literal=POSTGRES_DB="${{ secrets.POSTGRES_DB }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      # deploy the docker images to k8s
-      - name: Deploy apps
+      - name: Apply manifests
         run: |
           # Runtime RBAC is bootstrapped separately with a cluster-admin context.
           # The deployment identity intentionally cannot create or update RBAC.
-          kubectl apply -f ./infra/pvc.yml
-          kubectl apply -f ./infra/postgres.yml
-          kubectl apply -f ./infra/dynamic_nginx/deployment.yml
-          kubectl apply -f ./infra/apps/backend.yml
-          kubectl apply -f ./infra/apps/frontend.yml
-          kubectl apply -f ./infra/ingress.yml
-
-      - name: Pin application images to this commit
-        run: |
-          kubectl set env deployment/sky-backend RUNTIME_IMAGE_TAG=${{ github.event.workflow_run.head_sha }}
-          kubectl set image deployment/sky-backend backend=tarunsingh28/sky-backend:${{ github.event.workflow_run.head_sha }}
-          kubectl set image deployment/sky-frontend frontend=tarunsingh28/sky-frontend:${{ github.event.workflow_run.head_sha }}
-
-      - name: Remove retired project WebSocket relays
-        run: |
-          for deployment in $(kubectl get deployment -l sky.dev/component=websocket -o name); do
-            kubectl delete "$deployment"
-          done
-          for service in $(kubectl get service -o name); do
-            case "$service" in
-              *-ws-server-service) kubectl delete "$service" ;;
-            esac
-          done
-
-      - name: Refresh existing project services
-        run: |
-          pin_to_workspace_node() {
-            deployment="$1"
-            runtime_id="$2"
-            kubectl patch "$deployment" --type=merge -p "{\"spec\":{\"template\":{\"spec\":{\"affinity\":{\"podAffinity\":{\"requiredDuringSchedulingIgnoredDuringExecution\":[{\"labelSelector\":{\"matchLabels\":{\"app\":\"${runtime_id}-workspace\"}},\"topologyKey\":\"kubernetes.io/hostname\"}]}}}}}}"
-          }
-
-          # Both proxies mount ConfigMap files via subPath and need an explicit
-          # restart to observe configuration changes.
-          kubectl rollout restart deployment/dynamic-nginx deployment/nginx-proxy
-
-          for deployment in $(kubectl get deployment -o name); do
-            case "$deployment" in
-              *-agent-deployment)
-                runtime_id="${deployment#deployment.apps/}"
-                runtime_id="${runtime_id%-agent-deployment}"
-                pin_to_workspace_node "$deployment" "$runtime_id"
-                kubectl set image "$deployment" "${runtime_id}-agent=tarunsingh28/sky-agent:${{ github.event.workflow_run.head_sha }}"
-                kubectl set env "$deployment" \
-                  CONTEXT_ARCHIVE_PATH=/user-app/.sky-agent-context \
-                  WORKSPACE_CONTAINER_PATH=/app/my-app
-                kubectl set resources "$deployment" \
-                  --requests=cpu=250m,memory=256Mi \
-                  --limits=cpu=1,memory=2Gi
-                kubectl rollout restart "$deployment"
-                ;;
-              *-recovery)
-                runtime_id="${deployment#deployment.apps/}"
-                runtime_id="${runtime_id%-recovery}"
-                pin_to_workspace_node "$deployment" "$runtime_id"
-                kubectl set image "$deployment" "${runtime_id}-recovery-cron=tarunsingh28/sky-recovery-cron:${{ github.event.workflow_run.head_sha }}"
-                kubectl rollout restart "$deployment"
-                ;;
-              *-recovery-cron-deployment)
-                runtime_id="${deployment#deployment.apps/}"
-                runtime_id="${runtime_id%-recovery-cron-deployment}"
-                pin_to_workspace_node "$deployment" "$runtime_id"
-                kubectl set image "$deployment" "${runtime_id}-recovery-cron=tarunsingh28/sky-recovery-cron:${{ github.event.workflow_run.head_sha }}"
-                kubectl rollout restart "$deployment"
-                ;;
-            esac
-          done
-
-      - name: Wait for Postgres
-        run: |
-          kubectl rollout status deployment/sky-postgres
-          kubectl rollout status deployment/nginx-proxy
-          kubectl rollout status deployment/dynamic-nginx
-          kubectl rollout status deployment/sky-backend
-          kubectl rollout status deployment/sky-frontend
-
-      - name: Apply database migrations
-        run: |
-          kubectl exec deployment/sky-backend -- \
-            sh -c 'cd /app/packages/db && bunx prisma migrate deploy'
+          kubectl apply -f ./k8s/infra/pvc.yml
+          kubectl apply -f ./k8s/infra/postgres.yml
+          kubectl apply -f ./k8s/infra/dynamic_nginx/deployment.yml
+          kubectl apply -f ./k8s/apps/backend.yml
+          kubectl apply -f ./k8s/apps/frontend.yml
+          kubectl apply -f ./k8s/infra/ingress.yml

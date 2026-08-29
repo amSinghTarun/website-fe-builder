@@ -28,7 +28,7 @@ export async function createWorkspaceArchive(
   return completed;
 }
 
-export const backupCron = () => {
+export const backupCron = (databaseProjectId: string) => {
   new Cron(
     " 20 * * * * * ",
     {
@@ -41,14 +41,8 @@ export const backupCron = () => {
       },
     },
     async () => {
-      const databaseProjectId = process.env.DATABASE_PROJECT_ID?.trim();
       const volumePath =
         process.env.WORKSPACE_PATH?.trim() || "/user-app/my-app";
-
-      if (!databaseProjectId) {
-        console.error("Backup skipped: DATABASE_PROJECT_ID is required");
-        return;
-      }
 
       console.log("Cron job to upload backup started");
       let gcpStoreHandler = gcpStore.getInstance();
@@ -65,6 +59,7 @@ export const backupCron = () => {
         select: {
           id: true,
           updatedAt: true,
+          status: true,
           completed: true,
           toolCall: true,
           snapshotCaptured: true,
@@ -73,7 +68,9 @@ export const backupCron = () => {
 
       if (
         !lastDoneToolCall ||
-        !lastDoneToolCall.completed ||
+        (lastDoneToolCall.status
+          ? lastDoneToolCall.status !== "SUCCEEDED"
+          : lastDoneToolCall.completed !== true) ||
         lastDoneToolCall.snapshotCaptured
       ) {
         return;

@@ -9,10 +9,9 @@ import {
 } from "fastify-type-provider-zod";
 import fastifySwagger from "@fastify/swagger";
 import scalar from "@scalar/fastify-api-reference";
-import { catchUserInputResolver } from "./helper";
+import { resolveInputRequest } from "./inputRequestRegistry";
 import { prisma, type ConversationHistory } from "@sky/db";
-import { tools } from "./tools/index.js";
-import { normalizeToolResult } from "./types/tools.js";
+import { getTool } from "./tools/index.js";
 import { getConfiguredAppRuntimeMonitor } from "./runtime/index.js";
 import {
   AgentRunCancelledError,
@@ -20,9 +19,10 @@ import {
 } from "./runtime/AgentRunRegistry.js";
 import { listWorkspaceFiles } from "./runtime/workspaceFiles.js";
 import { parseFrontendLibrary } from "./systemPrompts/index.js";
+import { requireDatabaseProjectId } from "@sky/common";
 
 const app = Fastify().withTypeProvider<ZodTypeProvider>();
-const configuredDatabaseProjectId = process.env["DATABASE_PROJECT_ID"]?.trim();
+const configuredDatabaseProjectId = requireDatabaseProjectId();
 const workspacePath = process.env["WORKSPACE_PATH"]?.trim() || process.cwd();
 const replayableToolNames = new Set([
   "createFile",
@@ -32,10 +32,7 @@ const replayableToolNames = new Set([
 ]);
 
 function assertConfiguredProject(projectId: string): void {
-  if (
-    configuredDatabaseProjectId &&
-    projectId !== configuredDatabaseProjectId
-  ) {
+  if (projectId !== configuredDatabaseProjectId) {
     throw new Error("Project ID does not belong to this agent runtime");
   }
 }
@@ -63,6 +60,7 @@ await app.register(scalar, {
 
 app.get("/health", async () => ({ status: "success" }));
 
+// split in 2 parts.
 app.get(
   "/files",
   {
@@ -109,7 +107,7 @@ app.post(
 
       const frontendLibrary = parseFrontendLibrary(project.library);
       const runController = agentRunRegistry.start(request.body.projectId);
-      let geminiAgent = new GeminiProvider(
+      const geminiAgent = await GeminiProvider.create(
         request.body.projectId,
         frontendLibrary,
         undefined,
@@ -125,7 +123,7 @@ app.post(
       return new Response(
         async function* () {
           try {
-            for await (let output of textStream) {
+            for await (const output of textStream) {
               yield `data: ${JSON.stringify(output)}\n\n`;
             }
           } finally {
@@ -189,13 +187,11 @@ app.post(
   async (request, reply) => {
     try {
       assertConfiguredProject(request.body.projectId);
-      const resolver = catchUserInputResolver.get(request.body.uuid);
-      if (!resolver) {
+      if (!resolveInputRequest(request.body.uuid, request.body.message)) {
         return reply.code(409).send({
           error: "This input request is no longer active",
         });
       }
-      resolver(request.body.message);
       return reply.code(200).send({ status: "success" });
     } catch (error) {
       console.log(error);
@@ -218,7 +214,6 @@ app.post(
   async (request, reply) => {
     try {
       if (
-        configuredDatabaseProjectId &&
         request.body.toolCalls.some(
           (toolCall) => toolCall.projectId !== configuredDatabaseProjectId,
         )
@@ -232,7 +227,7 @@ app.post(
         response: unknown;
       }> = [];
 
-      for (let tool of request.body.toolCalls) {
+      for (const tool of request.body.toolCalls) {
         if (tool.from == "LOOP") {
           replayResults.push({
             toolCall: tool.toolCall,
@@ -242,13 +237,7 @@ app.post(
           continue;
         }
 
-        const replayTool =
-          tools[tool.toolCall as keyof typeof tools] ??
-          Object.values(tools).find(
-            (candidate) =>
-              candidate.declaration.name === tool.toolCall ||
-              candidate.identifier.toString() === tool.toolCall,
-          );
+        const replayTool = getTool(tool.toolCall);
 
         if (!replayTool) {
           replayResults.push({
@@ -268,9 +257,11 @@ app.post(
         }
 
         const stored = JSON.parse(tool.contents as string);
-        const result = normalizeToolResult(
-          await replayTool.executable(stored.args, { cwd: workspacePath }),
-        );
+        const result = await replayTool.executable(stored.args, {
+          cwd: workspacePath,
+          databaseProjectId: configuredDatabaseProjectId,
+          agentRunId: `replay:${tool.id}`,
+        });
         runtimeMayChange ||= result.effects?.runtimeMayChange === true;
         replayResults.push({
           toolCall: tool.toolCall,
@@ -278,7 +269,9 @@ app.post(
         });
       }
 
-      const configuredRuntime = getConfiguredAppRuntimeMonitor();
+      const configuredRuntime = getConfiguredAppRuntimeMonitor(
+        configuredDatabaseProjectId,
+      );
       const runtimeState =
         runtimeMayChange && configuredRuntime
           ? await configuredRuntime.monitor.waitForSettledState(

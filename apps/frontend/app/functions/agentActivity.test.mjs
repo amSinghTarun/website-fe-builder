@@ -26,6 +26,33 @@ describe("agent activity stream", () => {
     ]);
   });
 
+  test("appends newly discovered plan steps without resetting completion", () => {
+    const planned = reduceAgentActivity(emptyAgentActivity, {
+      type: "plan",
+      response: [{ id: "design", task: "Design the page" }],
+    });
+    const completed = reduceAgentActivity(planned, {
+      type: "planComplete",
+      response: "design",
+    });
+    const extended = reduceAgentActivity(completed, {
+      type: "planAppend",
+      response: [
+        { id: "design", task: "Duplicate design task" },
+        { id: "verify", task: "Verify the final application" },
+      ],
+    });
+
+    expect(extended.items).toEqual([
+      { id: "plan-design", label: "Design the page", status: "complete" },
+      {
+        id: "plan-verify",
+        label: "Verify the final application",
+        status: "active",
+      },
+    ]);
+  });
+
   test("shows runtime recovery and success", () => {
     const repairing = reduceAgentActivity(emptyAgentActivity, {
       type: "runtime",
@@ -68,6 +95,30 @@ describe("agent activity stream", () => {
       label: "Generation stopped by user.",
       status: "complete",
     });
+  });
+
+  test("shows exact sub-agent completion and merge-conflict states", () => {
+    const completed = reduceAgentActivity(emptyAgentActivity, {
+      type: "subAgentFinished",
+      response: { id: "designer", status: "MERGED" },
+    });
+    const conflicted = reduceAgentActivity(completed, {
+      type: "subAgentFailed",
+      response: { id: "reviewer", status: "MERGE_CONFLICT" },
+    });
+
+    expect(conflicted.items).toEqual([
+      {
+        id: "sub-agent-designer",
+        label: "Sub-agent designer finished",
+        status: "complete",
+      },
+      {
+        id: "sub-agent-reviewer",
+        label: "Sub-agent reviewer has merge conflicts",
+        status: "error",
+      },
+    ]);
   });
 
   test("parses agent questions and shows a waiting activity", () => {

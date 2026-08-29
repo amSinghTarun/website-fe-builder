@@ -1,4 +1,4 @@
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 import { workspacePodAffinity } from "../../workspace-affinity";
 import { runtimeImage } from "../../runtime-image";
 
@@ -37,6 +37,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
           },
         },
         spec: {
+          restartPolicy: "Always",
           serviceAccountName: "k8s-service-account",
           affinity: workspacePodAffinity(runtimeId),
           initContainers: [
@@ -85,8 +86,7 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
               env: [
                 {
                   name: "NODE_EXTRA_CA_CERTS",
-                  value:
-                    "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+                  value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
                 },
                 { name: "DATABASE_PROJECT_ID", value: databaseProjectId },
                 { name: "APP_NAMESPACE", value: "default" },

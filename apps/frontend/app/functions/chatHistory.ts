@@ -3,13 +3,22 @@ export type PersistedChatRecord = {
   contents: string;
   from: "USER" | "ASSISTANT" | "LOOP";
   output: string | null;
+  errorMessage: string | null;
+  status:
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "CANCELLED"
+    | "BLOCKED"
+    | null;
   createdAt: string;
 };
 
 export type ChatMessage = {
   id: string;
-  from: "user" | "assistant";
+  from: "user" | "assistant" | "status";
   message: string;
+  tone?: "error" | "warning" | "muted";
 };
 
 export function mapChatHistory(
@@ -26,6 +35,7 @@ export function mapChatHistory(
       const messages: ChatMessage[] = [];
       const contents = record.contents.trim();
       const output = record.output?.trim();
+      const errorMessage = record.errorMessage?.trim();
 
       if (contents) {
         messages.push({
@@ -42,6 +52,20 @@ export function mapChatHistory(
           id: `${record.id}-output`,
           from: "assistant",
           message: output,
+        });
+      }
+
+      if (record.from === "USER" && errorMessage) {
+        messages.push({
+          id: `${record.id}-status`,
+          from: "status",
+          message: errorMessage,
+          tone:
+            record.status === "CANCELLED"
+              ? "muted"
+              : record.status === "BLOCKED"
+                ? "warning"
+                : "error",
         });
       }
 

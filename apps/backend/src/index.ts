@@ -22,7 +22,7 @@ import "dotenv/config";
 import { customAlphabet } from "nanoid";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { toRuntimeId } from "@sky/runtime-id";
+import { toRuntimeId } from "@sky/common";
 import { Readable } from "node:stream";
 
 const PORT = 3001;
@@ -56,17 +56,17 @@ async function openAgentStream(
 
     if (attempt < 60) {
       await new Promise<void>((resolve, reject) => {
-        const finishWait = () => {
-          signal?.removeEventListener("abort", onAbort);
-          resolve();
-        };
-        const timer = setTimeout(finishWait, 2_000);
         const onAbort = () => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
           reject(signal?.reason ?? new Error("Generation stopped by user"));
         };
         signal?.addEventListener("abort", onAbort, { once: true });
+        const finishWait = () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const timer = setTimeout(finishWait, 2000);
         if (signal?.aborted) onAbort();
       });
     }
@@ -92,7 +92,7 @@ async function stopAgent(databaseProjectId: string): Promise<boolean> {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId: databaseProjectId }),
-        signal: AbortSignal.timeout(3_000),
+        signal: AbortSignal.timeout(3000),
       },
     );
 
@@ -156,8 +156,10 @@ await app.register(cors, {
   hook: "onRequest",
   origin: (origin, callback) => {
     const allowedOrigins = new Set(
-      (process.env.CORS_ORIGINS ??
-        "http://localhost:5173,http://sky.traun.co,https://sky.traun.co")
+      (
+        process.env.CORS_ORIGINS ??
+        "http://localhost:5173,http://sky.traun.co,https://sky.traun.co"
+      )
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean),
@@ -455,18 +457,14 @@ app.post(
 
     const runtime = await spinupK8sResources(feLibrary, projectId);
 
-    // need to return the url of server so that we can display frontend as per it
-
-    return reply
-      .code(201)
-      .send({
-        status: "success",
-        message: "Infra created",
-        data: {
-          ...runtime,
-          ...projectRuntimeRoutes(projectId),
-        },
-      });
+    return reply.code(201).send({
+      status: "success",
+      message: "Infra created",
+      data: {
+        ...runtime,
+        ...projectRuntimeRoutes(projectId),
+      },
+    });
   },
 );
 
@@ -546,16 +544,6 @@ app.get(
       message: "Project runtime status",
       data: await getProjectRuntimeStatus(project.id),
     });
-  },
-);
-
-app.get(
-  "/getServerUrl",
-  {
-    onRequest: checkAuth,
-  },
-  async (request, reply) => {
-    // send the url of the server running in k8s, for user to see the display
   },
 );
 
@@ -715,6 +703,7 @@ app.post(
   },
 );
 
+// break in 2 parts
 app.get(
   "/getServerFilesAndCode",
   {

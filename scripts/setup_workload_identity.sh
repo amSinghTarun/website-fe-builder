@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-
-# Exit immediately if a command exits with a non-zero status
 set -e
 
 # ==========================================
@@ -18,7 +16,7 @@ echo "Starting Workload Identity Setup"
 echo "=================================================="
 
 # 1. Create the Service Account in Kubernetes
-echo "⏳ Step 1: Creating Kubernetes Service Account '${K8S_SA_NAME}' in namespace '${K8S_NAMESPACE}'..."
+echo "Step 1: Creating Kubernetes Service Account '${K8S_SA_NAME}' in namespace '${K8S_NAMESPACE}'..."
 
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -28,12 +26,12 @@ metadata:
   namespace: ${K8S_NAMESPACE}
 EOF
 
-echo "✅ Kubernetes Service Account created successfully."
+echo "Kubernetes Service Account created successfully."
 echo "--------------------------------------------------"
 
 # 2. Grant the direct GKE workload principal only the cloud permissions used
 # by the agent and recovery services.
-echo "⏳ Step 2: Granting cloud roles to the GKE workload principal..."
+echo "Step 2: Granting cloud roles to the GKE workload principal..."
 
 PROJECT_NUMBER="$(gcloud projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)')"
 WORKLOAD_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${GCP_PROJECT_ID}.svc.id.goog/subject/ns/${K8S_NAMESPACE}/sa/${K8S_SA_NAME}"
@@ -52,13 +50,12 @@ gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
     --member="${WORKLOAD_PRINCIPAL}"
 
 echo "--------------------------------------------------"
-echo "🎉 Setup complete! Your Kubernetes pods using the"
-echo "   '${K8S_SA_NAME}' service account can now call Vertex AI"
-echo "   and read/write the configured backup bucket."
+echo "Setup complete. Pods using '${K8S_SA_NAME}' can now call Vertex AI"
+echo "and read/write the configured backup bucket."
 echo "=================================================="
 
 
-# EXPLAINATION: 
+# EXPLANATION:
 
 # Kubernetes proactively injects it.
 # When you deploy your pod with serviceAccountName: "agent-k8s-sa", the Kubernetes control plane sees this before the pod even starts.

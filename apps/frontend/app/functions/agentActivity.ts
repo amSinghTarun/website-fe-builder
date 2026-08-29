@@ -178,6 +178,25 @@ export function reduceAgentActivity(
     };
   }
 
+  if (event.type === "planAppend") {
+    const steps = planItems(event.response).map((step) => ({
+      id: `plan-${step.id}`,
+      label: step.task,
+      status: "active" as const,
+    }));
+
+    return {
+      ...state,
+      items: steps.reduce(
+        (items, step) =>
+          items.some((item) => item.id === step.id)
+            ? items
+            : [...items, step],
+        state.items,
+      ),
+    };
+  }
+
   if (event.type === "planComplete") {
     const id = `plan-${responseText(event.response)}`;
     return {
@@ -240,14 +259,46 @@ export function reduceAgentActivity(
     };
   }
 
-  if (event.type === "waitingForAgent") {
-    const id = responseText(event.response);
+  if (
+    event.type === "subAgentFinished" ||
+    // Compatibility with events emitted by already-running older agent pods.
+    event.type === "waitingForAgent"
+  ) {
+    const result =
+      event.response &&
+      typeof event.response === "object" &&
+      !Array.isArray(event.response)
+        ? (event.response as Record<string, unknown>)
+        : undefined;
+    const id = responseText(result?.id ?? event.response);
     return {
       ...state,
       items: upsert(state.items, {
         id: `sub-agent-${id}`,
         label: `Sub-agent ${id} finished`,
         status: "complete",
+      }),
+    };
+  }
+
+  if (event.type === "subAgentFailed") {
+    const result =
+      event.response &&
+      typeof event.response === "object" &&
+      !Array.isArray(event.response)
+        ? (event.response as Record<string, unknown>)
+        : {};
+    const id = responseText(result.id) || "unknown";
+    const status = responseText(result.status);
+    return {
+      ...state,
+      items: upsert(state.items, {
+        id: `sub-agent-${id}`,
+        label:
+          status === "MERGE_CONFLICT"
+            ? `Sub-agent ${id} has merge conflicts`
+            : `Sub-agent ${id} failed`,
+        status: "error",
       }),
     };
   }

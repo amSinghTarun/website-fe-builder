@@ -22,7 +22,7 @@
     "@kubernetes/client-node": "^1.4.0",
     "@scalar/fastify-api-reference": "^1.60.0",
     "@sky/db": "workspace:*",
-    "@sky/runtime-id": "workspace:*",
+    "@sky/common": "workspace:*",
     "argon2": "^0.44.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",

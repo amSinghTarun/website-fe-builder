@@ -6,13 +6,30 @@ import {
   unlinkSync,
   existsSync,
 } from "fs";
-import { resolveWorkspacePath } from "../helper";
-import { Tools, type ToolContext, type ToolResult } from "../types/tools";
+import path from "node:path";
+import { type ToolContext, type ToolResult } from "../types/tools";
 import { isContextArtifactReference } from "../context/contextArchive";
+import { activityTarget } from "../toolActivity";
 
-export let fileTools = {
+function resolveWorkspacePath(cwd: string, relativePath: string): string {
+  const workspace = path.resolve(cwd);
+  const resolved = path.resolve(workspace, relativePath);
+
+  if (resolved !== workspace && !resolved.startsWith(workspace + path.sep)) {
+    throw new Error("Path escapes workspace");
+  }
+
+  return resolved;
+}
+
+export const fileTools = {
   readDirectory: {
-    identifier: Tools.READ_DIR,
+    activity: {
+      started: (args: { directoryPath: string }) =>
+        `Inspecting project files ${activityTarget(args.directoryPath, ".")}`,
+      completed: (args: { directoryPath: string }) =>
+        `Inspected project files ${activityTarget(args.directoryPath, ".")}`,
+    },
     declaration: {
       name: "readDirectory",
       description: "List the files and folders in a directory.",
@@ -47,7 +64,12 @@ export let fileTools = {
   },
 
   readFileContent: {
-    identifier: Tools.READ_FILE,
+    activity: {
+      started: (args: { filePath: string }) =>
+        `Reading ${activityTarget(args.filePath, "a project file")}`,
+      completed: (args: { filePath: string }) =>
+        `Reviewed ${activityTarget(args.filePath, "a project file")}`,
+    },
     declaration: {
       name: "readFileContent",
       description: "Read and return the full text content of a file.",
@@ -76,7 +98,12 @@ export let fileTools = {
   },
 
   createFile: {
-    identifier: Tools.CREATE_FILE,
+    activity: {
+      started: (args: { fileCreatePath: string }) =>
+        `Creating ${activityTarget(args.fileCreatePath, "a frontend file")}`,
+      completed: (args: { fileCreatePath: string }) =>
+        `Created ${activityTarget(args.fileCreatePath, "a frontend file")}`,
+    },
     declaration: {
       name: "createFile",
       description:
@@ -108,7 +135,12 @@ export let fileTools = {
   },
 
   deleteFile: {
-    identifier: Tools.DELETE_FILE,
+    activity: {
+      started: (args: { fileDeletePath: string }) =>
+        `Removing ${activityTarget(args.fileDeletePath, "a frontend file")}`,
+      completed: (args: { fileDeletePath: string }) =>
+        `Removed ${activityTarget(args.fileDeletePath, "a frontend file")}`,
+    },
     declaration: {
       name: "deleteFile",
       description: "Delete the file at the specified path.",
@@ -140,7 +172,12 @@ export let fileTools = {
   },
 
   updateFile: {
-    identifier: Tools.UPDATE_FILE,
+    activity: {
+      started: (args: { filePath: string }) =>
+        `Updating ${activityTarget(args.filePath, "a frontend file")}`,
+      completed: (args: { filePath: string }) =>
+        `Updated ${activityTarget(args.filePath, "a frontend file")}`,
+    },
     declaration: {
       name: "updateFile",
       description:

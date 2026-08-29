@@ -1,11 +1,13 @@
 import { type FunctionDeclaration } from "@google/genai";
-import { catchUserInputResolver } from "../helper";
+import { registerInputRequest } from "../inputRequestRegistry";
 import { randomUUID } from "node:crypto";
-import { Tools } from "../types/tools";
 
-export let inputTools = {
+export const inputTools = {
   takeUserInput: {
-    identifier: Tools.TAKE_INPUT,
+    activity: {
+      started: "Preparing a question for you",
+      completed: "Prepared a question for you",
+    },
     declaration: {
       name: "takeUserInput",
       description:
@@ -31,16 +33,16 @@ export let inputTools = {
         required: ["questions"],
       },
     } as FunctionDeclaration,
-    executable: (args: { questions: object }, _context: { cwd: string }) => {
-      let uuid = randomUUID();
+    executable: (args: { questions: object }) => {
+      const uuid = randomUUID();
       return {
         response: "",
         yield: {
           type: "askInput",
           response: args.questions,
-          uuid: uuid,
-          resolver: new Promise((resolve, rejects) => {
-            catchUserInputResolver.set(uuid, (input: string) => resolve(input));
+          uuid,
+          resolver: new Promise((resolve) => {
+            registerInputRequest(uuid, resolve);
           }),
         },
       };
