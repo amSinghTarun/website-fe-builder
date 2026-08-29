@@ -43,7 +43,6 @@ import {
   delegatedResultsMessage,
   emitToolActivity,
   evaluateRuntimeRepair,
-  functionCallIdentity,
   type AgentChunk,
   type PlanTask,
 } from "../agentLoop/helpers";
@@ -425,7 +424,7 @@ export class GeminiProvider {
       // Continue until no tools, repairs, plans, or delegated results remain.
       while (hasToolCall) {
         throwIfRunCancelled(args.signal);
-        let streamResponse;
+        let modelResponse;
         hasToolCall = false;
         let withheldTurnText = "";
 
@@ -443,12 +442,11 @@ export class GeminiProvider {
               });
 
             if ((sessionTokens?.totalTokens ?? 0) >= 1000) {
-              const inLoopContextualiseChat =
-                GeminiProvider.contextualiseChat(
-                  currentHistory,
-                  this.sessionKey,
-                  this.projectId,
-                );
+              const inLoopContextualiseChat = GeminiProvider.contextualiseChat(
+                currentHistory,
+                this.sessionKey,
+                this.projectId,
+              );
               const currentSession = GeminiProvider.sessions[this.sessionKey]!;
 
               GeminiProvider.sessions[this.sessionKey] = {
@@ -468,7 +466,9 @@ export class GeminiProvider {
 
           // Send the current user, tool, repair, or delegation message to Gemini.
           const session = GeminiProvider.sessions[this.sessionKey]!;
-          streamResponse = await session.chat.sendMessageStream({
+          // Tool calls must arrive atomically. Gemini's streaming response can
+          // expose growing argument snapshots that are not safe to execute.
+          modelResponse = await session.chat.sendMessage({
             message: newMessage,
             // A per-request config does not inherit the chat config in
             // @google/genai. Repeat the system/tool configuration here so
@@ -494,218 +494,196 @@ export class GeminiProvider {
           break;
         }
 
-        // Execute every tool call and feed its structured result back to Gemini.
-        const processedFunctionCalls = new Set<string>();
+        withheldTurnText = modelResponse.text ?? "";
         let functionCallResponses: PartListUnion = [];
         let runtimeDirtyThisTurn = false;
-        for await (const response of streamResponse) {
+        for (const functionCall of modelResponse.functionCalls ?? []) {
           throwIfRunCancelled(args.signal);
-          const responseText = response.text ?? "";
 
-          if (response.functionCalls && response.functionCalls.length > 0) {
-            for (const functionCall of response.functionCalls) {
-              throwIfRunCancelled(args.signal);
+          const toolName = functionCall.name ?? "unknownTool";
+          const functionArgs = functionCall.args as
+            Record<string, unknown> | undefined;
+          const toolActivityId = `${args.id}-${++toolActivitySequence}`;
 
-              const functionCallKey = functionCallIdentity(functionCall);
-              if (processedFunctionCalls.has(functionCallKey)) continue;
-              processedFunctionCalls.add(functionCallKey);
+          const tool = getTool(toolName);
 
-              const toolName = functionCall.name ?? "unknownTool";
-              const functionArgs = functionCall.args as
-                | Record<string, unknown>
-                | undefined;
-              const toolActivityId = `${args.id}-${++toolActivitySequence}`;
+          emitToolActivity(
+            toolActivityId,
+            tool,
+            functionArgs,
+            "started",
+            args.handler.onChunk,
+          );
 
-              const tool = getTool(toolName);
-
+          try {
+            if (!tool) {
               emitToolActivity(
                 toolActivityId,
                 tool,
                 functionArgs,
-                "started",
+                "failed",
                 args.handler.onChunk,
               );
-
-              try {
-                if (!tool) {
-                  emitToolActivity(
-                    toolActivityId,
-                    tool,
-                    functionArgs,
-                    "failed",
-                    args.handler.onChunk,
-                  );
-                  functionCallResponses.push({
-                    functionResponse: {
-                      ...(functionCall.id && { id: functionCall.id }),
-                      name: toolName,
-                      response: {
-                        output: "No such tool exist",
-                      },
-                    },
-                  });
-                  continue;
-                }
-
-                const toolArgs = {
-                  args: {
-                    ...(functionCall.args as any),
+              functionCallResponses.push({
+                functionResponse: {
+                  ...(functionCall.id && { id: functionCall.id }),
+                  name: toolName,
+                  response: {
+                    output: "No such tool exist",
                   },
-                  context: {
-                    cwd: this.cwd,
-                    databaseProjectId: this.projectId,
-                    agentRunId: String(conversationRecord.id),
-                    signal: args.signal,
-                  },
-                };
+                },
+              });
+              continue;
+            }
 
-                const output = await abortable(
-                  Promise.resolve(
-                    tool.executable(toolArgs.args, toolArgs.context),
-                  ),
-                  args.signal,
+            const toolArgs = {
+              args: {
+                ...(functionCall.args as any),
+              },
+              context: {
+                cwd: this.cwd,
+                databaseProjectId: this.projectId,
+                agentRunId: String(conversationRecord.id),
+                signal: args.signal,
+              },
+            };
+
+            const output = await abortable(
+              Promise.resolve(tool.executable(toolArgs.args, toolArgs.context)),
+              args.signal,
+            );
+
+            if (output.effects?.runtimeMayChange) {
+              runtimeDirtyThisTurn = true;
+              runtimeTouched = true;
+            }
+            if (output.effects?.workspaceChanged) {
+              workspaceChanged = true;
+            }
+
+            if (tool.declaration.name === "createSubAgent") {
+              const provisionOutput = output as {
+                response: string;
+                workspacePath?: string;
+              };
+              if (provisionOutput.workspacePath) {
+                const subAgentId = functionCall.args?.id as string;
+                const subAgentSession = new GeminiProvider(
+                  this.projectId,
+                  this.frontendLibrary,
+                  functionCall.args?.systemPrompt as string,
+                  provisionOutput.workspacePath,
+                  `${this.sessionKey}:agent:${subAgentId}`,
                 );
-
-                if (output.effects?.runtimeMayChange) {
-                  runtimeDirtyThisTurn = true;
-                  runtimeTouched = true;
-                }
-                if (output.effects?.workspaceChanged) {
-                  workspaceChanged = true;
-                }
-
-                if (tool.declaration.name === "createSubAgent") {
-                  const provisionOutput = output as {
-                    response: string;
-                    workspacePath?: string;
-                  };
-                  if (provisionOutput.workspacePath) {
-                    const subAgentId = functionCall.args?.id as string;
-                    const subAgentSession = new GeminiProvider(
-                      this.projectId,
-                      this.frontendLibrary,
-                      functionCall.args?.systemPrompt as string,
-                      provisionOutput.workspacePath,
-                      `${this.sessionKey}:agent:${subAgentId}`,
-                    );
-                    startSubAgentLifecycle({
+                startSubAgentLifecycle({
+                  id: subAgentId,
+                  projectId: this.projectId,
+                  parentRunId: String(conversationRecord.id),
+                  parentAgentId: args.id,
+                  mainWorktreePath: this.cwd || process.cwd(),
+                  start: () =>
+                    subAgentSession.agentLoop({
                       id: subAgentId,
-                      projectId: this.projectId,
-                      parentRunId: String(conversationRecord.id),
-                      parentAgentId: args.id,
-                      mainWorktreePath: this.cwd || process.cwd(),
-                      start: () =>
-                        subAgentSession.agentLoop({
-                          id: subAgentId,
-                          message: functionCall.args?.prompt as string,
-                          signal: args.signal,
-                          handler: { onChunk: args.handler.onChunk },
-                        }),
-                      onSettled: (result) => {
-                        args.handler.onChunk?.({
-                          type:
-                            result.status === "MERGED"
-                              ? "subAgentFinished"
-                              : "subAgentFailed",
-                          response: result,
-                        });
-                      },
-                    });
-                  }
-                }
-
-                applyTaskPlanToolCall({
-                  toolName: tool.declaration.name ?? "",
-                  toolArgs: functionArgs,
-                  output,
-                  activeTaskPlan,
-                  completedTaskIds,
-                });
-
-                await prisma.conversationHistory.create({
-                  data: {
-                    contents: JSON.stringify(toolArgs),
-                    from: "ASSISTANT",
-                    toolCall: tool.declaration.name,
-                    projectId: this.projectId,
-                    type: "TOOL_CALL",
-                    output: JSON.stringify({
-                      type: output.yield?.type,
-                      response: output.yield?.response,
+                      message: functionCall.args?.prompt as string,
+                      signal: args.signal,
+                      handler: { onChunk: args.handler.onChunk },
                     }),
-                    agentId: args.id,
-                  },
-                });
-
-                if (output.yield) {
-                  args.handler.onChunk?.({
-                    type: output.yield.type,
-                    response: output.yield.response,
-                    uuid: output.yield.uuid,
-                  });
-
-                  if (output.yield?.resolver)
-                    try {
-                      output.response = await abortable(
-                        output.yield.resolver,
-                        args.signal,
-                      );
-                    } finally {
-                      if (output.yield.uuid) {
-                        removeInputRequest(output.yield.uuid);
-                      }
-                    }
-                }
-
-                functionCallResponses.push({
-                  functionResponse: {
-                    ...(functionCall.id && { id: functionCall.id }),
-                    name: functionCall.name,
-                    response: {
-                      output: output.response,
-                    },
-                  },
-                });
-                emitToolActivity(
-                  toolActivityId,
-                  tool,
-                  functionArgs,
-                  "completed",
-                  args.handler.onChunk,
-                );
-              } catch (error: any) {
-                if (error instanceof AgentRunCancelledError) throw error;
-                emitToolActivity(
-                  toolActivityId,
-                  tool,
-                  functionArgs,
-                  "failed",
-                  args.handler.onChunk,
-                );
-                functionCallResponses.push({
-                  functionResponse: {
-                    ...(functionCall.id && { id: functionCall.id }),
-                    name: toolName,
-                    response: {
-                      output:
-                        error instanceof Error
-                          ? error.message
-                          : JSON.stringify(error),
-                    },
+                  onSettled: (result) => {
+                    args.handler.onChunk?.({
+                      type:
+                        result.status === "MERGED"
+                          ? "subAgentFinished"
+                          : "subAgentFailed",
+                      response: result,
+                    });
                   },
                 });
               }
-
-              hasToolCall = true;
             }
+
+            applyTaskPlanToolCall({
+              toolName: tool.declaration.name ?? "",
+              toolArgs: functionArgs,
+              output,
+              activeTaskPlan,
+              completedTaskIds,
+            });
+
+            await prisma.conversationHistory.create({
+              data: {
+                contents: JSON.stringify(toolArgs),
+                from: "ASSISTANT",
+                toolCall: tool.declaration.name,
+                projectId: this.projectId,
+                type: "TOOL_CALL",
+                output: JSON.stringify({
+                  type: output.yield?.type,
+                  response: output.yield?.response,
+                }),
+                agentId: args.id,
+              },
+            });
+
+            if (output.yield) {
+              args.handler.onChunk?.({
+                type: output.yield.type,
+                response: output.yield.response,
+                uuid: output.yield.uuid,
+              });
+
+              if (output.yield?.resolver)
+                try {
+                  output.response = await abortable(
+                    output.yield.resolver,
+                    args.signal,
+                  );
+                } finally {
+                  if (output.yield.uuid) {
+                    removeInputRequest(output.yield.uuid);
+                  }
+                }
+            }
+
+            functionCallResponses.push({
+              functionResponse: {
+                ...(functionCall.id && { id: functionCall.id }),
+                name: functionCall.name,
+                response: {
+                  output: output.response,
+                },
+              },
+            });
+            emitToolActivity(
+              toolActivityId,
+              tool,
+              functionArgs,
+              "completed",
+              args.handler.onChunk,
+            );
+          } catch (error: any) {
+            if (error instanceof AgentRunCancelledError) throw error;
+            emitToolActivity(
+              toolActivityId,
+              tool,
+              functionArgs,
+              "failed",
+              args.handler.onChunk,
+            );
+            functionCallResponses.push({
+              functionResponse: {
+                ...(functionCall.id && { id: functionCall.id }),
+                name: toolName,
+                response: {
+                  output:
+                    error instanceof Error
+                      ? error.message
+                      : JSON.stringify(error),
+                },
+              },
+            });
           }
 
-          if (responseText) {
-            // A model turn can include both prose and function calls. Keep that
-            // intermediate narration out of chat; tool activity already shows
-            // progress. Only expose prose from the accepted terminal turn.
-            withheldTurnText += responseText;
-          }
+          hasToolCall = true;
         }
 
         if (hasToolCall) {
@@ -891,7 +869,8 @@ export class GeminiProvider {
         }
       }
 
-      const history = GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
+      const history =
+        GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
 
       // Sub-agents persist their own terminal record and return to the merger.
       if (args.id !== "1") {

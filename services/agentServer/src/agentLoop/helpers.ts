@@ -17,17 +17,6 @@ type RuntimeRepairDecision =
   | { action: "retry"; message: string }
   | { action: "blocked"; message: string };
 
-// Streaming responses can repeat the same completed function call in several chunks.
-export function functionCallIdentity(functionCall: {
-  id?: string;
-  name?: string;
-  args?: unknown;
-}): string {
-  return `${functionCall.name ?? "unknownTool"}:${JSON.stringify(
-    functionCall.args ?? {},
-  )}`;
-}
-
 // Emit one transient activity update for the frontend while a tool runs.
 export function emitToolActivity(
   id: string,
