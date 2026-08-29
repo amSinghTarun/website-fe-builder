@@ -102,7 +102,6 @@ jobs:
           kubectl create job "$migration_job" --from=cronjob/"$migration_template"
           kubectl patch job "$migration_job" \
             --type=merge -p '{"spec":{"ttlSecondsAfterFinished":300}}'
-          kubectl delete cronjob "$migration_template"
           if ! kubectl wait --for=condition=complete job/"$migration_job" --timeout=180s; then
             kubectl logs job/"$migration_job"
             exit 1
