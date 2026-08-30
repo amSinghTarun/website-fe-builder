@@ -48,6 +48,8 @@ import {
 } from "../agentLoop/helpers";
 import { startSubAgentLifecycle } from "../subAgents/lifecycle";
 
+const CONTEXT_COMPACTION_TOKEN_THRESHOLD = 20_000;
+
 export class GeminiProvider {
   private static sessions: {
     [sessionKey: string]: {
@@ -430,37 +432,6 @@ export class GeminiProvider {
 
         try {
           console.log("\n\n\n------------------------------------");
-
-          // Compact oversized tool arguments before sending the next model turn.
-          const currentHistory =
-            GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
-          if (currentHistory.length) {
-            const sessionTokens =
-              await GeminiProvider.geminiClient.models.countTokens({
-                model: "gemini-2.5-flash",
-                contents: currentHistory,
-              });
-
-            if ((sessionTokens?.totalTokens ?? 0) >= 1000) {
-              const inLoopContextualiseChat = GeminiProvider.contextualiseChat(
-                currentHistory,
-                this.sessionKey,
-                this.projectId,
-              );
-              const currentSession = GeminiProvider.sessions[this.sessionKey]!;
-
-              GeminiProvider.sessions[this.sessionKey] = {
-                ...this.createNewSession({
-                  newSystemPrompt: currentSession.persistentSummary,
-                  history: inLoopContextualiseChat.history,
-                }),
-                contextualiseCount: ++inLoopContextualiseChat.contextedCount,
-                persistentSummary: currentSession.persistentSummary,
-                summarizedThroughHistoryId:
-                  currentSession.summarizedThroughHistoryId,
-              };
-            }
-          }
 
           throwIfRunCancelled(args.signal);
 
@@ -920,7 +891,12 @@ export class GeminiProvider {
               contents: history,
             });
 
-          if ((sessionTokens?.totalTokens ?? 0) > 1000) {
+          // Compact only after the run. Rewriting function-call arguments in
+          // the middle of a tool-response chain can make Gemini repeat a call.
+          if (
+            (sessionTokens?.totalTokens ?? 0) >
+            CONTEXT_COMPACTION_TOKEN_THRESHOLD
+          ) {
             const { contextedCount, history: newHistory } =
               GeminiProvider.contextualiseChat(
                 history,
