@@ -741,7 +741,19 @@ export class GeminiProvider {
 
         if (runStatus !== "RUNNING") break;
 
-        if (!hasToolCall && withheldTurnText) {
+        if (!hasToolCall && !withheldTurnText.trim()) {
+          const fallbackMessage = workspaceChanged
+            ? completionFallbackMessage(runtimeVerified)
+            : runtimeVerified
+              ? "I found no reproducible application failure. Strict lint, the production build, and the live browser preview are healthy."
+              : "I could not complete a reliable application diagnosis.";
+          args.handler.onChunk?.({
+            type: "message",
+            response: fallbackMessage,
+          });
+          rawFinalOutput += `${rawFinalOutput ? "\n\n" : ""}${fallbackMessage}`;
+          finalOutput += `${finalOutput ? "\n\n" : ""}${fallbackMessage}`;
+        } else if (!hasToolCall) {
           const rawMessage = withheldTurnText.trim();
           const finalMessage =
             workspaceChanged
