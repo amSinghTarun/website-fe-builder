@@ -1,7 +1,5 @@
 export type FrontendLibrary = "react" | "vue";
 
-type WorkspaceCompletionAction = "accept" | "retry" | "fail";
-
 export function parseFrontendLibrary(value: string): FrontendLibrary {
   const normalized = value.trim().toLowerCase();
   if (normalized === "react" || normalized === "vue") return normalized;
@@ -77,15 +75,4 @@ FINAL RESPONSE
 - Never produce a file-by-file changelog, repeat the request, narrate implementation steps, or tell the user to check the preview.
 - Do not output full source files, setup tutorials, or instructions telling the user to create files manually.
 ${additionalContext?.trim() ? `\nADDITIONAL TASK CONTEXT\n${additionalContext.trim()}` : ""}`;
-}
-
-export function workspaceCompletionAction(args: {
-  mutationRequired: boolean;
-  workspaceChanged: boolean;
-  previousRetries: number;
-}): WorkspaceCompletionAction {
-  if (!args.mutationRequired || args.workspaceChanged) {
-    return "accept";
-  }
-  return args.previousRetries < 2 ? "retry" : "fail";
 }

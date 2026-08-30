@@ -5,7 +5,7 @@ FROM oven/bun:1
 COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git \
+  && apt-get install -y --no-install-recommends chromium git \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

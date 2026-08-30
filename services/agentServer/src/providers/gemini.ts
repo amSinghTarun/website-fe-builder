@@ -13,17 +13,16 @@ import {
   createFrontendSystemPrompt,
   completionAgentPrompt,
   completionFallbackMessage,
-  intentClassifierPrompt,
   summariseAgentPrompt,
   type FrontendLibrary,
-  type RequestIntent,
-  workspaceCompletionAction,
 } from "../systemPrompts";
 import { prisma, type ConversationRunStatus } from "@sky/db";
 import {
   getConfiguredAppRuntimeMonitor,
   type AppRuntimeState,
+  validateFrontendBrowser,
   validateFrontendBuild,
+  validateFrontendLint,
   validateFrontendQuality,
   fingerprintWorkspace,
 } from "../runtime";
@@ -266,55 +265,11 @@ export class GeminiProvider {
     }
   }
 
-  private static async classifyRequestIntent(
-    message: string,
-    signal?: AbortSignal,
-  ): Promise<RequestIntent> {
-    try {
-      const response = await GeminiProvider.geminiClient.models.generateContent(
-        {
-          model: "gemini-2.5-flash",
-          contents: JSON.stringify({ userMessage: message }),
-          config: {
-            systemInstruction: intentClassifierPrompt,
-            responseMimeType: "application/json",
-            responseJsonSchema: {
-              type: "object",
-              properties: {
-                intent: {
-                  type: "string",
-                  enum: ["implementation", "informational", "ambiguous"],
-                },
-              },
-              required: ["intent"],
-              additionalProperties: false,
-            },
-            temperature: 0,
-            maxOutputTokens: 120,
-            ...(signal && { abortSignal: signal }),
-          },
-        },
-      );
-
-      if (!response.text?.trim()) return "ambiguous";
-
-      const parsed = JSON.parse(response.text) as { intent: RequestIntent };
-      return parsed.intent === "implementation" ||
-        parsed.intent === "informational"
-        ? parsed.intent
-        : "ambiguous";
-    } catch (error) {
-      if (signal?.aborted) throw new AgentRunCancelledError();
-      console.error("Unable to classify request intent:", error);
-      return "ambiguous";
-    }
-  }
-
   private async observeRuntime(
     handler: {
       onChunk?: (chunk: { type: string; response: any; uuid?: string }) => void;
     },
-    verifyBuild = false,
+    validation: "runtime" | "diagnostic" | "functional" | "completion" = "runtime",
     signal?: AbortSignal,
   ): Promise<AppRuntimeState | undefined> {
     const configured = getConfiguredAppRuntimeMonitor(this.projectId);
@@ -325,26 +280,48 @@ export class GeminiProvider {
 
     let state = await configured.monitor.waitForSettledState(configured.ref);
 
-    // Vite can return a healthy HTML shell even when an imported JSX/TS module
-    // fails to compile. At completion, require a production build so the agent
-    // receives the actual compiler diagnostics and repairs the workspace.
-    if (verifyBuild && state.status === "running") {
+    const workspaceOptions = {
+      databaseProjectId: this.projectId,
+      namespace: configured.ref.namespace,
+      containerName: configured.ref.containerName,
+      workingDirectory:
+        process.env["WORKSPACE_CONTAINER_PATH"]?.trim() || "/app/my-app",
+      signal,
+    };
+
+    // HTTP 200 only proves Vite served its shell. Strict lint catches browser
+    // failures such as undefined JSX components before Gemini may answer.
+    if (validation !== "runtime" && state.status === "running") {
       state =
-        (await validateFrontendBuild({
-          databaseProjectId: this.projectId,
-          namespace: configured.ref.namespace,
-          containerName: configured.ref.containerName,
-          workingDirectory:
-            process.env["WORKSPACE_CONTAINER_PATH"]?.trim() || "/app/my-app",
+        (await validateFrontendLint(workspaceOptions)) ?? state;
+    }
+
+    if (
+      (validation === "functional" || validation === "completion") &&
+      state.status === "running"
+    ) {
+      state = (await validateFrontendBuild(workspaceOptions)) ?? state;
+    }
+
+    if (validation !== "runtime" && state.status === "running") {
+      const publicHost = configured.ref.httpHost?.trim();
+      const internalHostname = `${configured.ref.serviceName}.${configured.ref.namespace}.svc.cluster.local`;
+      const previewUrl = publicHost
+        ? `http://${publicHost}:${configured.ref.servicePort}${configured.ref.httpPath ?? "/"}`
+        : `http://${internalHostname}:${configured.ref.servicePort}${configured.ref.httpPath ?? "/"}`;
+      state =
+        (await validateFrontendBrowser({
+          url: previewUrl,
+          internalHostname: publicHost ? internalHostname : undefined,
           signal,
         })) ?? state;
+    }
 
-      if (state.status === "running") {
-        state =
-          (await validateFrontendQuality(
-            this.cwd || configured.ref.workspacePath,
-          )) ?? state;
-      }
+    if (validation === "completion" && state.status === "running") {
+      state =
+        (await validateFrontendQuality(
+          this.cwd || configured.ref.workspacePath,
+        )) ?? state;
     }
 
     handler.onChunk?.({ type: "runtime", response: state });
@@ -393,23 +370,17 @@ export class GeminiProvider {
 
       const activeTaskPlan = new Map<string, PlanTask>();
       const completedTaskIds = new Set<string>();
-      let runtimeTouched = false;
       let workspaceChanged = false;
       let runtimeVerified = false;
-      let requestIntent: RequestIntent | undefined;
-      let mutationRequired = false;
-      let noChangeRetries = 0;
       let toolActivitySequence = 0;
       const repairAttemptsByFingerprint = new Map<string, number>();
-      const completionRepairAttemptsByFingerprint = new Map<string, number>();
 
       const runtimeRepairMessage = (
         runtimeState: Awaited<ReturnType<typeof this.observeRuntime>>,
-        attemptsByFingerprint = repairAttemptsByFingerprint,
       ): string | undefined => {
         const decision = evaluateRuntimeRepair(
           runtimeState,
-          attemptsByFingerprint,
+          repairAttemptsByFingerprint,
         );
         if (decision.action === "retry") return decision.message;
         if (decision.action !== "blocked") return undefined;
@@ -423,8 +394,22 @@ export class GeminiProvider {
         return undefined;
       };
 
+      // Inspect every main-agent request before Gemini answers. This catches
+      // existing runtime and lint failures even when the user only asks why.
+      if (args.id === "1") {
+        const initialRuntimeState = await abortable(
+          this.observeRuntime(args.handler, "diagnostic", args.signal),
+          args.signal,
+        );
+        runtimeVerified = initialRuntimeState?.status === "running";
+        const repairMessage = runtimeRepairMessage(initialRuntimeState);
+        if (repairMessage) {
+          newMessage = [{ text: args.message }, { text: repairMessage }];
+        }
+      }
+
       // Continue until no tools, repairs, plans, or delegated results remain.
-      while (hasToolCall) {
+      while (hasToolCall && runStatus === "RUNNING") {
         throwIfRunCancelled(args.signal);
         let modelResponse;
         hasToolCall = false;
@@ -448,8 +433,6 @@ export class GeminiProvider {
               systemInstruction: session.systemInstruction,
               functionDeclarations: this.functionDeclarations(),
               abortSignal: args.signal,
-              forceImplementationToolCall:
-                mutationRequired && !workspaceChanged,
             }),
           });
         } catch (error: any) {
@@ -467,7 +450,6 @@ export class GeminiProvider {
 
         withheldTurnText = modelResponse.text ?? "";
         let functionCallResponses: PartListUnion = [];
-        let runtimeDirtyThisTurn = false;
         for (const functionCall of modelResponse.functionCalls ?? []) {
           throwIfRunCancelled(args.signal);
 
@@ -524,10 +506,6 @@ export class GeminiProvider {
               args.signal,
             );
 
-            if (output.effects?.runtimeMayChange) {
-              runtimeDirtyThisTurn = true;
-              runtimeTouched = true;
-            }
             if (output.effects?.workspaceChanged) {
               workspaceChanged = true;
             }
@@ -657,22 +635,7 @@ export class GeminiProvider {
           hasToolCall = true;
         }
 
-        if (hasToolCall) {
-          if (args.id === "1" && runtimeDirtyThisTurn) {
-            throwIfRunCancelled(args.signal);
-            const runtimeState = await abortable(
-              this.observeRuntime(args.handler, false, args.signal),
-              args.signal,
-            );
-            const repairMessage = runtimeRepairMessage(runtimeState);
-
-            if (repairMessage) {
-              functionCallResponses.push({ text: repairMessage });
-            }
-          }
-
-          newMessage = functionCallResponses;
-        }
+        if (hasToolCall) newMessage = functionCallResponses;
 
         throwIfRunCancelled(args.signal);
 
@@ -688,7 +651,6 @@ export class GeminiProvider {
           const mergedWorkspace =
             delegatedResultsChangedWorkspace(readySubAgentResults);
           workspaceChanged ||= mergedWorkspace;
-          runtimeTouched ||= mergedWorkspace;
           newMessage = [
             ...newMessage,
             {
@@ -706,7 +668,6 @@ export class GeminiProvider {
           );
           workspaceChanged =
             currentWorkspaceFingerprint !== initialWorkspaceFingerprint;
-          runtimeTouched ||= workspaceChanged;
         }
 
         // Resolve unfinished plan steps before collecting delegated work.
@@ -743,7 +704,6 @@ export class GeminiProvider {
             const mergedWorkspace =
               delegatedResultsChangedWorkspace(subAgentResults);
             workspaceChanged ||= mergedWorkspace;
-            runtimeTouched ||= mergedWorkspace;
             newMessage = [
               {
                 text: delegatedResultsMessage(subAgentResults, true),
@@ -753,18 +713,20 @@ export class GeminiProvider {
           }
         }
 
-        // Verify the final preview only after plans and delegated work settle.
-        if (!hasToolCall && args.id === "1" && runtimeTouched) {
+        // Every main request must finish against a healthy application. Changed
+        // workspaces additionally pass the visual-quality completion review.
+        if (!hasToolCall && args.id === "1") {
           const runtimeState = await abortable(
-            this.observeRuntime(args.handler, true, args.signal),
+            this.observeRuntime(
+              args.handler,
+              workspaceChanged ? "completion" : "functional",
+              args.signal,
+            ),
             args.signal,
           );
           runtimeVerified = runtimeState?.status === "running";
 
-          const repairMessage = runtimeRepairMessage(
-            runtimeState,
-            completionRepairAttemptsByFingerprint,
-          );
+          const repairMessage = runtimeRepairMessage(runtimeState);
           if (repairMessage) {
             newMessage = [{ text: repairMessage }];
             hasToolCall = true;
@@ -773,54 +735,10 @@ export class GeminiProvider {
 
         if (runStatus !== "RUNNING") break;
 
-        // Classify only a terminal no-change response to avoid an eager LLM call.
-        let rejectedProseCompletion = false;
-        if (
-          !hasToolCall &&
-          args.id === "1" &&
-          !workspaceChanged &&
-          requestIntent === undefined
-        ) {
-          requestIntent = await abortable(
-            GeminiProvider.classifyRequestIntent(args.message, args.signal),
-            args.signal,
-          );
-          mutationRequired = requestIntent !== "informational";
-        }
-
-        const completionAction =
-          args.id === "1"
-            ? workspaceCompletionAction({
-                mutationRequired,
-                workspaceChanged,
-                previousRetries: noChangeRetries,
-              })
-            : "accept";
-        if (!hasToolCall && completionAction !== "accept") {
-          rejectedProseCompletion = true;
-
-          if (completionAction === "fail") {
-            const errorMessage =
-              "The coding agent did not modify the frontend workspace after two retries.";
-            args.handler.onChunk?.({ type: "error", response: errorMessage });
-            throw new Error(errorMessage);
-          }
-
-          noChangeRetries += 1;
-          newMessage = [
-            {
-              text: `Your response was rejected because this is an implementation request and no workspace-changing tool succeeded. Do not provide a tutorial or source-code snippet. Inspect the existing ${this.frontendLibrary} project, modify its frontend files with tools, and verify the browser preview before responding.`,
-            },
-          ];
-          hasToolCall = true;
-        }
-
-        // Do not expose a tutorial-style answer that failed the implementation
-        // contract. Only stream text from a valid turn.
-        if (!rejectedProseCompletion && !hasToolCall && withheldTurnText) {
+        if (!hasToolCall && withheldTurnText) {
           const rawMessage = withheldTurnText.trim();
           const finalMessage =
-            mutationRequired || workspaceChanged
+            workspaceChanged
               ? await abortable(
                   GeminiProvider.rewriteCompletionMessageAgent({
                     userRequest: args.message,
