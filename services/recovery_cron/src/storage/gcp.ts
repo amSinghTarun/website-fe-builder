@@ -2,6 +2,48 @@ import { Storage } from "@google-cloud/storage";
 import unzipper from "unzipper";
 import "dotenv/config";
 import fs from "node:fs/promises";
+import path from "node:path";
+
+const requiredWorkspaceFiles = ["package.json", "index.html"];
+
+// Extract into staging so an incomplete archive never replaces the workspace.
+export async function extractSnapshotArchive(
+  archiveData: Uint8Array,
+  destinationPath: string,
+): Promise<void> {
+  const destinationParent = path.dirname(destinationPath);
+  await fs.mkdir(destinationParent, { recursive: true });
+
+  const stagingPath = await fs.mkdtemp(
+    path.join(destinationParent, ".sky-restore-"),
+  );
+
+  try {
+    const archive = await unzipper.Open.buffer(Buffer.from(archiveData));
+    await archive.extract({ path: stagingPath });
+
+    const missingFiles: string[] = [];
+    for (const fileName of requiredWorkspaceFiles) {
+      try {
+        await fs.access(path.join(stagingPath, fileName));
+      } catch {
+        missingFiles.push(fileName);
+      }
+    }
+
+    if (missingFiles.length > 0) {
+      throw new Error(
+        `Snapshot is incomplete; missing required workspace files: ${missingFiles.join(", ")}`,
+      );
+    }
+
+    await fs.rm(destinationPath, { recursive: true, force: true });
+    await fs.rename(stagingPath, destinationPath);
+  } catch (error) {
+    await fs.rm(stagingPath, { recursive: true, force: true });
+    throw error;
+  }
+}
 // For more information on ways to initialize Storage, please see
 // https://googleapis.dev/nodejs/storage/latest/Storage.html
 
@@ -99,21 +141,10 @@ export class gcpStore {
       return null;
     }
 
-    await fs.mkdir(destinationPath, { recursive: true });
+    const [archiveData] = await latestZipFile.download();
+    await extractSnapshotArchive(archiveData, destinationPath);
+    console.log("Snapshot restored and validated successfully");
 
-    await new Promise((resolve, reject) => {
-      latestZipFile
-        .createReadStream()
-        .pipe(unzipper.Extract({ path: destinationPath }))
-        .on("finish", () => {
-          console.log("Snapshot restored successfully");
-          resolve(true);
-        })
-        .on("error", (error) => {
-          console.error("Snapshot restore error:", error);
-          reject(error);
-        });
-    });
     return latestZipFile.name;
   }
 }

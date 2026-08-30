@@ -36,19 +36,13 @@ export const recovery = async (databaseProjectId: string) => {
   }
 
   const gcpStoreHandler = gcpStore.getInstance();
-  let snapshotFileName: string | null = null;
 
-  try {
-    snapshotFileName = await gcpStoreHandler.retrieveSnapshotData(
-      databaseProjectId,
-      pathToVolume,
-    );
-  } catch (error) {
-    console.error(
-      "Snapshot restore unavailable; continuing with workspace bootstrap:",
-      error instanceof Error ? error.message : String(error),
-    );
-  }
+  // A missing snapshot is a valid new-project state. A corrupt or incomplete
+  // snapshot must fail recovery instead of starting from partial files.
+  const snapshotFileName = await gcpStoreHandler.retrieveSnapshotData(
+    databaseProjectId,
+    pathToVolume,
+  );
 
   // The workspace process waits for this marker before scaffolding or starting.
   // This prevents a new Vite project from racing with snapshot extraction.

@@ -1,13 +1,6 @@
-import { AppsV1Api, KubeConfig, CoreV1Api } from "@kubernetes/client-node";
 import { toRuntimeId } from "@sky/common";
 import * as k8sConfs from "../../k8s";
-
-const kc = new KubeConfig();
-if (process.env.KUBERNETES_SERVICE_HOST) {
-  kc.loadFromCluster();
-} else {
-  kc.loadFromDefault();
-}
+import { k8sAppsApi, k8sCoreApi } from "./k8sClient";
 
 function isNotFound(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -113,6 +106,3 @@ export const spinupK8sResources = async (
     workspaceService: `${runtimeId}-workspace-service`,
   };
 };
-
-const k8sAppsApi = kc.makeApiClient(AppsV1Api);
-const k8sCoreApi = kc.makeApiClient(CoreV1Api);

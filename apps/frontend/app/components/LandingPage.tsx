@@ -1,4 +1,4 @@
-import { Sparkles, ArrowDown, X, Clock, ArrowRight, Check, Loader2 } from "lucide-react";
+import { Sparkles, ArrowDown, X, Clock, ArrowRight, Check, Loader2, Network } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { useAuthStore } from "~/store/authStore";
 import { useNavigate } from "react-router";
@@ -216,6 +216,13 @@ export function LandingPage() {
                   className="px-4 py-1.5 text-sm border hover:border-white hover:text-[#070707] border-white hover:bg-white transition cursor-pointer"
                 >
                   Resume Project
+                </button>
+
+                <button
+                  onClick={() => navigate("/cluster")}
+                  className="flex items-center gap-2 px-4 py-1.5 text-sm border border-zinc-700 text-zinc-400 hover:border-violet-400 hover:text-violet-300 transition cursor-pointer"
+                >
+                  <Network size={14} /> Show Cluster
                 </button>
               </div>
             )}

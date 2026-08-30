@@ -15,6 +15,7 @@ import {
   verifyHashedPassword,
   spinupK8sResources,
   getProjectRuntimeStatus,
+  getClusterTopology,
   projectRuntimeRoutes,
 } from "./helpers";
 import { checkAuth } from "./middleware";
@@ -366,6 +367,20 @@ app.get(
         ...project,
         ...projectRuntimeRoutes(project.id),
       })),
+    });
+  },
+);
+
+app.get(
+  "/clusterTopology",
+  {
+    onRequest: checkAuth,
+  },
+  async (_request, reply) => {
+    return reply.code(200).send({
+      status: "success",
+      message: "Current Kubernetes cluster topology",
+      data: await getClusterTopology(),
     });
   },
 );

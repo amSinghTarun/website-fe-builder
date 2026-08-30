@@ -11,7 +11,7 @@ metadata:
   namespace: default
 rules:
   - apiGroups: [""]
-    resources: ["persistentvolumeclaims", "services"]
+    resources: ["persistentvolumeclaims", "services", "pods"]
     verbs: ["get", "list", "create", "update"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -30,3 +30,25 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: sky-backend-runtime-provisioner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sky-backend-node-viewer
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sky-backend-node-viewer
+subjects:
+  - kind: ServiceAccount
+    name: sky-backend-sa
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sky-backend-node-viewer

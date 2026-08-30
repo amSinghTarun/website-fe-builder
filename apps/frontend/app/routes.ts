@@ -7,6 +7,7 @@ export default [
   // route("/", "./routes/landing.tsx"),
 
   route("/app", "./routes/app.tsx"),
+  route("/cluster", "./routes/cluster.tsx"),
 
   // ...(await flatRoutes()),
 ] satisfies RouteConfig;
