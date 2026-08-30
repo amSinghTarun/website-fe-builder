@@ -43,6 +43,19 @@ type ProjectFile = {
   size: number;
 };
 
+function runtimeStartupSummary(runtime: {
+  workspaceReady?: boolean;
+  agentReady?: boolean;
+}): string {
+  if (runtime.workspaceReady && !runtime.agentReady) {
+    return "Preview is ready; waiting for the coding agent";
+  }
+  if (!runtime.workspaceReady && runtime.agentReady) {
+    return "Coding agent is ready; waiting for the preview";
+  }
+  return "Starting the preview and coding agent";
+}
+
 const SUGGESTIONS = [
   "A kanban board with drag and drop",
   "A landing page for a coffee subscription",
@@ -110,20 +123,28 @@ export function App() {
       );
       const result = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(result?.message || result?.error || "Unable to load files");
+        throw new Error(
+          result?.message || result?.error || "Unable to load files",
+        );
       }
 
       const files = (result?.data ?? []) as ProjectFile[];
       setProjectFiles(files);
       setSelectedFilePath((current) => {
-        if (current && files.some((file) => file.path === current)) return current;
+        if (current && files.some((file) => file.path === current))
+          return current;
         return (
-          files.find((file) => /(^|\/)src\/App\.(tsx|ts|jsx|js)$/.test(file.path))
-            ?.path ?? files[0]?.path ?? null
+          files.find((file) =>
+            /(^|\/)src\/App\.(tsx|ts|jsx|js)$/.test(file.path),
+          )?.path ??
+          files[0]?.path ??
+          null
         );
       });
     } catch (error) {
-      setFileError(error instanceof Error ? error.message : "Unable to load files");
+      setFileError(
+        error instanceof Error ? error.message : "Unable to load files",
+      );
     } finally {
       setLoadingFiles(false);
     }
@@ -152,8 +173,7 @@ export function App() {
             title: string;
             initialPrompt?: string | null;
             workspaceUrl?: string;
-          }) =>
-            p.id === projectId
+          }) => p.id === projectId,
         );
         if (!cancelled) {
           setResolvedName(match ? match.title : null);
@@ -266,7 +286,7 @@ export function App() {
       try {
         const res = await fetch(
           apiUrl(`/chat?projectId=${encodeURIComponent(projectId)}`),
-          { credentials: "include" }
+          { credentials: "include" },
         );
 
         if (!res.ok) {
@@ -297,8 +317,68 @@ export function App() {
   }, [projectId]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
   }, [messages, isGenerating, pendingAgentInput, toolActivity]);
+
+  // The agent stream cannot emit tool activity until its pod is reachable.
+  // Poll runtime readiness so startup progress replaces the generic loader too.
+  useEffect(() => {
+    if (!projectId || !isGenerating) {
+      setToolActivity((current) =>
+        current?.id === "runtime-startup" ? null : current,
+      );
+      return;
+    }
+
+    let cancelled = false;
+    let nextPoll: ReturnType<typeof setTimeout> | null = null;
+
+    const pollRuntime = async () => {
+      try {
+        const response = await fetch(
+          apiUrl(`/runtimeStatus?projectId=${encodeURIComponent(projectId)}`),
+          { credentials: "include" },
+        );
+        const result = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (!response.ok || !result?.data) {
+          throw new Error("Runtime status is temporarily unavailable");
+        }
+
+        const runtime = result.data as {
+          workspaceReady?: boolean;
+          agentReady?: boolean;
+        };
+        const ready = runtime.workspaceReady && runtime.agentReady;
+        setToolActivity((current) =>
+          current && current.id !== "runtime-startup"
+            ? current
+            : {
+                id: "runtime-startup",
+                phase: ready ? "completed" : "started",
+                summary: ready
+                  ? "Preview and coding agent are ready"
+                  : runtimeStartupSummary(runtime),
+              },
+        );
+
+        if (ready) return;
+      } catch {
+        // The next poll will retry while the generation request remains active.
+      }
+
+      if (!cancelled) nextPoll = setTimeout(() => void pollRuntime(), 2_000);
+    };
+
+    void pollRuntime();
+    return () => {
+      cancelled = true;
+      if (nextPoll) clearTimeout(nextPoll);
+    };
+  }, [isGenerating, projectId]);
 
   useEffect(
     () => () => {
@@ -380,7 +460,11 @@ export function App() {
           assistantStarted = true;
           setMessages((previous) => [
             ...previous,
-            { id: assistantId, from: "assistant", message: chunk.response! as string },
+            {
+              id: assistantId,
+              from: "assistant",
+              message: chunk.response! as string,
+            },
           ]);
         } else {
           setMessages((previous) =>
@@ -395,7 +479,9 @@ export function App() {
 
       if (chunk.type === "runtimeBlocked") {
         streamBlocked = true;
-        toast.error("The generated app is still unhealthy after automatic repairs.");
+        toast.error(
+          "The generated app is still unhealthy after automatic repairs.",
+        );
       }
 
       if (chunk.type !== "message" && chunk.type !== "toolActivity") {
@@ -467,7 +553,9 @@ export function App() {
     }
 
     if (!projectId) {
-      toast.error("Missing project — go back and start or resume a project first.");
+      toast.error(
+        "Missing project — go back and start or resume a project first.",
+      );
       return;
     }
 
@@ -515,8 +603,10 @@ export function App() {
       await streamAgentMessage(trimmed, generationController.signal);
       setPreviewRevision((current) => current + 1);
     } catch (err: unknown) {
-      if (stopRequestedRef.current || generationController.signal.aborted) return;
-      const errMessage = err instanceof Error ? err.message : "Something went wrong";
+      if (stopRequestedRef.current || generationController.signal.aborted)
+        return;
+      const errMessage =
+        err instanceof Error ? err.message : "Something went wrong";
       setPendingAgentInput(null);
       setAgentAnswers({});
       setAgentActivity((previous) =>
@@ -624,7 +714,11 @@ export function App() {
         ...previous,
         items: previous.items.map((item) =>
           item.id === `question-${requestUuid}`
-            ? { ...item, label: "Your response was sent to the agent", status: "complete" }
+            ? {
+                ...item,
+                label: "Your response was sent to the agent",
+                status: "complete",
+              }
             : item,
         ),
       }));
@@ -669,39 +763,46 @@ export function App() {
                   <Loader2 size={13} className="animate-spin" /> Loading...
                 </span>
               ) : (
-                resolvedName?.toUpperCase() ?? "UNTITLED PROJECT"
+                (resolvedName?.toUpperCase() ?? "UNTITLED PROJECT")
               )}
             </div>
 
-            <div ref={scrollRef} className="h-full flex-1 flex flex-col gap-2 overflow-y-auto">
+            <div
+              ref={scrollRef}
+              className="h-full flex-1 flex flex-col gap-2 overflow-y-auto"
+            >
               {historyStatus === "loading" && (
                 <div className="flex-1 flex items-center justify-center text-zinc-600 text-sm gap-2">
-                  <Loader2 size={14} className="animate-spin" /> Loading conversation...
+                  <Loader2 size={14} className="animate-spin" /> Loading
+                  conversation...
                 </div>
               )}
 
               {historyStatus === "error" && (
                 <div className="flex-1 flex items-center justify-center px-6 text-center text-sm text-red-400">
-                  The saved conversation could not be loaded. Reopen the project to retry.
+                  The saved conversation could not be loaded. Reopen the project
+                  to retry.
                 </div>
               )}
 
-              {historyStatus === "loaded" && messages.length === 0 && !isGenerating && (
-                <div className="flex-1 flex flex-col justify-center gap-3">
-                  <p className="text-zinc-600 text-xs uppercase tracking-[0.2em] mb-1">
-                    Try something like
-                  </p>
-                  {SUGGESTIONS.map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => sendPrompt(s)}
-                      className="text-left text-sm text-zinc-400 border border-zinc-900 rounded-lg px-3 py-2 hover:border-cyan-400/40 hover:text-cyan-300 transition"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {historyStatus === "loaded" &&
+                messages.length === 0 &&
+                !isGenerating && (
+                  <div className="flex-1 flex flex-col justify-center gap-3">
+                    <p className="text-zinc-600 text-xs uppercase tracking-[0.2em] mb-1">
+                      Try something like
+                    </p>
+                    {SUGGESTIONS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => sendPrompt(s)}
+                        className="text-left text-sm text-zinc-400 border border-zinc-900 rounded-lg px-3 py-2 hover:border-cyan-400/40 hover:text-cyan-300 transition"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
               {historyStatus === "loaded" &&
                 messages.map((m) =>
@@ -731,7 +832,7 @@ export function App() {
                         {m.message}
                       </div>
                     </div>
-                  )
+                  ),
                 )}
 
               {agentActivity.items.length > 0 && (
@@ -756,7 +857,10 @@ export function App() {
                         ) : item.status === "complete" ? (
                           <CheckCircle2 size={13} className="mt-0.5 shrink-0" />
                         ) : isGenerating ? (
-                          <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin" />
+                          <Loader2
+                            size={13}
+                            className="mt-0.5 shrink-0 animate-spin"
+                          />
                         ) : (
                           <Circle size={13} className="mt-0.5 shrink-0" />
                         )}
@@ -777,7 +881,10 @@ export function App() {
                   </p>
                   <div className="flex flex-col gap-3">
                     {pendingAgentInput.questions.map((question) => (
-                      <label key={question.id} className="flex flex-col gap-1.5">
+                      <label
+                        key={question.id}
+                        className="flex flex-col gap-1.5"
+                      >
                         <span className="text-xs leading-4 text-zinc-300">
                           {question.question}
                         </span>
@@ -815,37 +922,38 @@ export function App() {
                 </form>
               )}
 
-              {toolActivity && (
-                <div
-                  aria-live="polite"
-                  className={`flex w-full items-start gap-2 px-2 py-1 text-xs leading-4 transition-opacity duration-300 ${
-                    toolActivity.phase === "failed"
-                      ? "text-red-400/70"
-                      : "text-zinc-500"
-                  }`}
-                >
-                  {toolActivity.phase === "started" ? (
-                    <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
-                  ) : toolActivity.phase === "completed" ? (
-                    <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
-                  ) : (
-                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
-                  )}
-                  <span>{toolActivity.summary}</span>
-                </div>
-              )}
-
               {isGenerating && (
                 <div className="w-full flex justify-start">
-                  <div className="w-fit p-2 px-3 rounded-lg rounded-bl-none bg-zinc-900 text-cyan-300 text-sm flex items-center gap-2">
-                    <Loader2 size={14} className="animate-spin" />
-                    Generating...
+                  <div
+                    aria-live="polite"
+                    className={`w-fit max-w-full p-2 px-3 rounded-lg rounded-bl-none bg-zinc-900 flex items-start gap-2 ${
+                      toolActivity?.phase === "failed"
+                        ? "text-xs text-red-400/70"
+                        : toolActivity
+                          ? "text-xs text-zinc-500"
+                          : "text-sm text-cyan-300"
+                    }`}
+                  >
+                    {toolActivity?.phase === "completed" ? (
+                      <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+                    ) : toolActivity?.phase === "failed" ? (
+                      <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                    ) : (
+                      <Loader2
+                        size={toolActivity ? 12 : 14}
+                        className="mt-0.5 shrink-0 animate-spin"
+                      />
+                    )}
+                    <span>{toolActivity?.summary ?? "Generating..."}</span>
                   </div>
                 </div>
               )}
             </div>
 
-            <form onSubmit={handleSubmit} className="flex border border-zinc-900 rounded-lg">
+            <form
+              onSubmit={handleSubmit}
+              className="flex border border-zinc-900 rounded-lg"
+            >
               <input
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
@@ -886,7 +994,9 @@ export function App() {
               <button
                 onClick={() => setActiveTab("preview")}
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition ${
-                  activeTab === "preview" ? "bg-cyan-300 text-black" : "text-zinc-500 hover:text-white"
+                  activeTab === "preview"
+                    ? "bg-cyan-300 text-black"
+                    : "text-zinc-500 hover:text-white"
                 }`}
               >
                 <Eye size={13} /> Preview
@@ -894,7 +1004,9 @@ export function App() {
               <button
                 onClick={() => setActiveTab("code")}
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition ${
-                  activeTab === "code" ? "bg-cyan-300 text-black" : "text-zinc-500 hover:text-white"
+                  activeTab === "code"
+                    ? "bg-cyan-300 text-black"
+                    : "text-zinc-500 hover:text-white"
                 }`}
               >
                 <Code2 size={13} /> Code
@@ -932,9 +1044,12 @@ export function App() {
                     className="mx-auto mb-3 animate-spin text-cyan-300"
                     size={24}
                   />
-                  <p className="text-sm text-zinc-300">Restoring your project</p>
+                  <p className="text-sm text-zinc-300">
+                    Restoring your project
+                  </p>
                   <p className="mt-1 text-xs leading-5 text-zinc-600">
-                    Recovering saved code and starting the preview and coding agent.
+                    Recovering saved code and starting the preview and coding
+                    agent.
                   </p>
                 </div>
               ) : resumeStatus === "error" ? (
@@ -957,7 +1072,8 @@ export function App() {
               ) : activeTab === "code" ? (
                 loadingFiles && projectFiles.length === 0 ? (
                   <div className="flex items-center gap-2 text-sm text-zinc-500">
-                    <Loader2 size={14} className="animate-spin" /> Loading generated files...
+                    <Loader2 size={14} className="animate-spin" /> Loading
+                    generated files...
                   </div>
                 ) : fileError && projectFiles.length === 0 ? (
                   <div className="max-w-sm px-6 text-center text-sm text-red-400">
