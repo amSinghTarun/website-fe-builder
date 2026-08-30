@@ -34,6 +34,7 @@ type ClusterTopologyData = {
     owner: string | null;
     createdAt: string | null;
     pvcNames: string[];
+    projectId: string | null;
   }>;
   services: Array<{
     id: string;
@@ -43,6 +44,7 @@ type ClusterTopologyData = {
     clusterIP: string | null;
     ports: string[];
     selectedPodIds: string[];
+    projectId: string | null;
   }>;
   pvcs: Array<{
     id: string;
@@ -53,6 +55,7 @@ type ClusterTopologyData = {
     accessModes: string[];
     volumeName: string | null;
     mountedByPodIds: string[];
+    projectId: string | null;
   }>;
 };
 
@@ -62,6 +65,34 @@ const NODE_WIDTH = 360;
 const POD_HEIGHT = 66;
 const RESOURCE_WIDTH = 230;
 const RESOURCE_HEIGHT = 72;
+
+const PROJECT_COLORS = [
+  { stroke: "#22d3ee", fill: "#071b22", text: "#67e8f9" },
+  { stroke: "#a78bfa", fill: "#171126", text: "#c4b5fd" },
+  { stroke: "#fb7185", fill: "#241014", text: "#fda4af" },
+  { stroke: "#34d399", fill: "#092019", text: "#6ee7b7" },
+  { stroke: "#fbbf24", fill: "#211805", text: "#fde68a" },
+  { stroke: "#60a5fa", fill: "#0b172b", text: "#93c5fd" },
+  { stroke: "#f472b6", fill: "#25101e", text: "#f9a8d4" },
+  { stroke: "#a3e635", fill: "#172006", text: "#bef264" },
+] as const;
+
+const PLATFORM_COLOR = { stroke: "#71717a", fill: "#121214", text: "#a1a1aa" };
+
+function colorForProject(projectId: string | null) {
+  if (!projectId) return PLATFORM_COLOR;
+  const hash = [...projectId].reduce((value, character) =>
+    ((value << 5) - value + character.charCodeAt(0)) | 0, 0);
+  return PROJECT_COLORS[Math.abs(hash) % PROJECT_COLORS.length] ?? PROJECT_COLORS[0];
+}
+
+function projectLabel(projectId: string | null): string {
+  return projectId ? `Project ${projectId.slice(0, 8)}` : "Platform";
+}
+
+function projectSortKey(resource: { projectId: string | null }): string {
+  return resource.projectId ?? "";
+}
 
 function displayName(name: string, maxLength = 38): string {
   if (name.length <= maxLength) return name;
@@ -80,7 +111,9 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
   const layout = useMemo(() => {
     const scheduledGroups = data.nodes.map((node) => ({
       node,
-      pods: data.pods.filter((pod) => pod.nodeName === node.name),
+      pods: data.pods
+        .filter((pod) => pod.nodeName === node.name)
+        .sort((a, b) => projectSortKey(a).localeCompare(projectSortKey(b))),
     }));
     const unscheduled = data.pods.filter((pod) => !pod.nodeName);
     const groups = unscheduled.length
@@ -118,18 +151,22 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
     const nodesBottom = Math.max(300, ...nodeLayouts.map((node) => node.y + node.height));
     const columns = Math.max(1, Math.floor((canvasWidth - 80) / (RESOURCE_WIDTH + 24)));
     const serviceY = nodesBottom + 112;
-    const services = data.services.map((service, index) => ({
+    const services = [...data.services]
+      .sort((a, b) => projectSortKey(a).localeCompare(projectSortKey(b)))
+      .map((service, index) => ({
       resource: service,
       x: 40 + (index % columns) * (RESOURCE_WIDTH + 24),
       y: serviceY + Math.floor(index / columns) * (RESOURCE_HEIGHT + 18),
-    }));
+      }));
     const serviceRows = Math.max(1, Math.ceil(data.services.length / columns));
     const pvcY = serviceY + serviceRows * (RESOURCE_HEIGHT + 18) + 110;
-    const pvcs = data.pvcs.map((pvc, index) => ({
+    const pvcs = [...data.pvcs]
+      .sort((a, b) => projectSortKey(a).localeCompare(projectSortKey(b)))
+      .map((pvc, index) => ({
       resource: pvc,
       x: 40 + (index % columns) * (RESOURCE_WIDTH + 24),
       y: pvcY + Math.floor(index / columns) * (RESOURCE_HEIGHT + 18),
-    }));
+      }));
     const pvcRows = Math.max(1, Math.ceil(data.pvcs.length / columns));
 
     return {
@@ -185,8 +222,8 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
                 <path
                   key={`service-${resource.id}-${podId}`}
                   d={connectionPath({ x: x + RESOURCE_WIDTH / 2, y }, pod)}
-                  stroke="#22d3ee"
-                  strokeWidth="1.4"
+                  stroke={colorForProject(resource.projectId).stroke}
+                  strokeWidth="2"
                   strokeDasharray="5 5"
                   opacity="0.48"
                 />
@@ -200,8 +237,8 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
                 <path
                   key={`pvc-${resource.id}-${podId}`}
                   d={connectionPath({ x: x + RESOURCE_WIDTH / 2, y }, pod)}
-                  stroke="#a78bfa"
-                  strokeWidth="1.4"
+                  stroke={colorForProject(resource.projectId).stroke}
+                  strokeWidth="2"
                   opacity="0.45"
                 />
               ) : [];
@@ -241,20 +278,21 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
               </g>
             ) : pods.map((pod, podIndex) => {
               const podY = y + 94 + podIndex * (POD_HEIGHT + 10);
+              const projectColor = colorForProject(pod.projectId);
               return (
                 <g key={pod.id}>
                   <title>{`${pod.name}\n${pod.owner ?? "No controller"}\n${pod.phase}, ${pod.restarts} restarts`}</title>
-                  <rect x={x + 16} y={podY} width={NODE_WIDTH - 32} height={POD_HEIGHT} rx="10" fill="#0b0b0c" stroke="#3f3f46" />
+                  <rect x={x + 16} y={podY} width={NODE_WIDTH - 32} height={POD_HEIGHT} rx="10" fill={projectColor.fill} stroke={projectColor.stroke} strokeOpacity="0.72" />
                   <rect x={x + 16} y={podY} width="4" height={POD_HEIGHT} rx="2" fill={podColor(pod)} />
-                  <circle cx={x + 38} cy={podY + 24} r="8" fill="#172554" stroke="#60a5fa" />
+                  <circle cx={x + 38} cy={podY + 24} r="8" fill={projectColor.fill} stroke={projectColor.stroke} />
                   <text x={x + 55} y={podY + 23} fill="#e4e4e7" fontSize="11" fontWeight="700">
                     {displayName(pod.name, 39)}
                   </text>
                   <text x={x + 55} y={podY + 43} fill="#71717a" fontSize="9">
                     {pod.phase} · {pod.ready ? "ready" : "not ready"} · {pod.restarts} restarts
                   </text>
-                  <text x={x + NODE_WIDTH - 22} y={podY + 43} textAnchor="end" fill="#52525b" fontSize="8">
-                    POD
+                  <text x={x + NODE_WIDTH - 22} y={podY + 43} textAnchor="end" fill={projectColor.text} fontSize="8">
+                    {pod.projectId?.slice(0, 8) ?? "PLATFORM"}
                   </text>
                 </g>
               );
@@ -269,20 +307,23 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
         {layout.services.length === 0 && (
           <text x="40" y={layout.serviceY + 24} fill="#52525b" fontSize="10">No Services found</text>
         )}
-        {layout.services.map(({ resource, x, y }) => (
+        {layout.services.map(({ resource, x, y }) => {
+          const projectColor = colorForProject(resource.projectId);
+          return (
           <g key={resource.id}>
             <title>{`${resource.name}\n${resource.type} ${resource.clusterIP ?? ""}\nRoutes to ${resource.selectedPodIds.length} pod(s)`}</title>
             <path
               d={`M ${x + 14} ${y} H ${x + RESOURCE_WIDTH - 14} L ${x + RESOURCE_WIDTH} ${y + RESOURCE_HEIGHT / 2} L ${x + RESOURCE_WIDTH - 14} ${y + RESOURCE_HEIGHT} H ${x + 14} L ${x} ${y + RESOURCE_HEIGHT / 2} Z`}
-              fill="#07151a"
-              stroke="#0891b2"
+              fill={projectColor.fill}
+              stroke={projectColor.stroke}
             />
-            <circle cx={x + 27} cy={y + 27} r="9" fill="#083344" stroke="#22d3ee" />
+            <circle cx={x + 27} cy={y + 27} r="9" fill={projectColor.fill} stroke={projectColor.stroke} />
             <text x={x + 45} y={y + 25} fill="#e4e4e7" fontSize="10" fontWeight="700">{displayName(resource.name, 27)}</text>
-            <text x={x + 45} y={y + 44} fill="#67e8f9" fontSize="8">{resource.type} · {resource.ports.join(", ") || "no ports"}</text>
-            <text x={x + 45} y={y + 59} fill="#52525b" fontSize="8">selects {resource.selectedPodIds.length} pod{resource.selectedPodIds.length === 1 ? "" : "s"}</text>
+            <text x={x + 45} y={y + 44} fill={projectColor.text} fontSize="8">{resource.type} · {resource.ports.join(", ") || "no ports"}</text>
+            <text x={x + 45} y={y + 59} fill="#71717a" fontSize="8">{projectLabel(resource.projectId)} · {resource.selectedPodIds.length} pod{resource.selectedPodIds.length === 1 ? "" : "s"}</text>
           </g>
-        ))}
+          );
+        })}
 
         <text x="40" y={layout.pvcY - 48} fill="#c4b5fd" fontSize="11" fontWeight="700" letterSpacing="2.4">
           STORAGE / PERSISTENT VOLUME CLAIMS
@@ -291,17 +332,20 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
         {layout.pvcs.length === 0 && (
           <text x="40" y={layout.pvcY + 24} fill="#52525b" fontSize="10">No PVCs found</text>
         )}
-        {layout.pvcs.map(({ resource, x, y }) => (
+        {layout.pvcs.map(({ resource, x, y }) => {
+          const projectColor = colorForProject(resource.projectId);
+          return (
           <g key={resource.id}>
             <title>{`${resource.name}\n${resource.phase} · ${resource.capacity ?? "unknown size"}\nMounted by ${resource.mountedByPodIds.length} pod(s)`}</title>
-            <rect x={x} y={y + 9} width={RESOURCE_WIDTH} height={RESOURCE_HEIGHT - 18} fill="#120d20" stroke="#7c3aed" />
-            <ellipse cx={x + RESOURCE_WIDTH / 2} cy={y + 9} rx={RESOURCE_WIDTH / 2} ry="9" fill="#211637" stroke="#a78bfa" />
-            <ellipse cx={x + RESOURCE_WIDTH / 2} cy={y + RESOURCE_HEIGHT - 9} rx={RESOURCE_WIDTH / 2} ry="9" fill="#120d20" stroke="#7c3aed" />
+            <rect x={x} y={y + 9} width={RESOURCE_WIDTH} height={RESOURCE_HEIGHT - 18} fill={projectColor.fill} stroke={projectColor.stroke} />
+            <ellipse cx={x + RESOURCE_WIDTH / 2} cy={y + 9} rx={RESOURCE_WIDTH / 2} ry="9" fill={projectColor.fill} stroke={projectColor.stroke} />
+            <ellipse cx={x + RESOURCE_WIDTH / 2} cy={y + RESOURCE_HEIGHT - 9} rx={RESOURCE_WIDTH / 2} ry="9" fill={projectColor.fill} stroke={projectColor.stroke} />
             <text x={x + 18} y={y + 33} fill="#e4e4e7" fontSize="10" fontWeight="700">{displayName(resource.name, 30)}</text>
-            <text x={x + 18} y={y + 51} fill="#c4b5fd" fontSize="8">{resource.phase} · {resource.capacity ?? "unknown size"} · {resource.accessModes.join(", ")}</text>
-            <text x={x + RESOURCE_WIDTH - 16} y={y + 51} textAnchor="end" fill="#6d28d9" fontSize="8">PVC</text>
+            <text x={x + 18} y={y + 51} fill={projectColor.text} fontSize="8">{resource.phase} · {resource.capacity ?? "unknown size"} · {resource.accessModes.join(", ")}</text>
+            <text x={x + RESOURCE_WIDTH - 16} y={y + 51} textAnchor="end" fill={projectColor.text} fontSize="8">{resource.projectId?.slice(0, 8) ?? "PLATFORM"}</text>
           </g>
-        ))}
+          );
+        })}
       </svg>
     </div>
   );
@@ -366,6 +410,13 @@ export function ClusterTopology() {
 
   const readyPods = data?.pods.filter((pod) => pod.ready).length ?? 0;
   const mountedPvcs = data?.pvcs.filter((pvc) => pvc.mountedByPodIds.length > 0).length ?? 0;
+  const projectIds = data
+    ? [...new Set([
+        ...data.pods.map((pod) => pod.projectId),
+        ...data.services.map((service) => service.projectId),
+        ...data.pvcs.map((pvc) => pvc.projectId),
+      ])].sort((a, b) => projectSortKey({ projectId: a }).localeCompare(projectSortKey({ projectId: b })))
+    : [];
 
   return (
     <main className="min-h-screen bg-[#070707] text-white">
@@ -411,12 +462,30 @@ export function ClusterTopology() {
         </header>
 
         {data && (
-          <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <SummaryCard icon={Server} label="Nodes" value={data.nodes.length} detail={`${data.nodes.filter((node) => node.ready).length} Ready`} />
-            <SummaryCard icon={Box} label="Pods" value={data.pods.length} detail={`${readyPods} Ready in ${data.namespace}`} />
-            <SummaryCard icon={Network} label="Services" value={data.services.length} detail={`${data.services.reduce((total, service) => total + service.selectedPodIds.length, 0)} routing links`} />
-            <SummaryCard icon={Database} label="PVCs" value={data.pvcs.length} detail={`${mountedPvcs} currently mounted`} />
-          </div>
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <SummaryCard icon={Server} label="Nodes" value={data.nodes.length} detail={`${data.nodes.filter((node) => node.ready).length} Ready`} />
+              <SummaryCard icon={Box} label="Pods" value={data.pods.length} detail={`${readyPods} Ready in ${data.namespace}`} />
+              <SummaryCard icon={Network} label="Services" value={data.services.length} detail={`${data.services.reduce((total, service) => total + service.selectedPodIds.length, 0)} routing links`} />
+              <SummaryCard icon={Database} label="PVCs" value={data.pvcs.length} detail={`${mountedPvcs} currently mounted`} />
+            </div>
+            <div className="mb-6 flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800 bg-[#0d0d0f] px-4 py-3">
+              <span className="mr-2 text-[9px] font-semibold uppercase tracking-[0.2em] text-zinc-600">Resource groups</span>
+              {projectIds.map((projectId) => {
+                const color = colorForProject(projectId);
+                return (
+                  <span
+                    key={projectId ?? "platform"}
+                    className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]"
+                    style={{ borderColor: color.stroke, color: color.text, backgroundColor: color.fill }}
+                  >
+                    <i className="h-2 w-2 rounded-full" style={{ backgroundColor: color.stroke }} />
+                    {projectLabel(projectId)}
+                  </span>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {error ? (
@@ -435,8 +504,8 @@ export function ClusterTopology() {
         <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-[10px] uppercase tracking-[0.14em] text-zinc-600">
           <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-green-500" />Ready</span>
           <span><i className="mr-2 inline-block h-2 w-2 rounded-full bg-amber-500" />Pending</span>
-          <span><i className="mr-2 inline-block h-px w-6 bg-cyan-400 align-middle" />Service → Pod</span>
-          <span><i className="mr-2 inline-block h-px w-6 bg-violet-400 align-middle" />PVC → Pod</span>
+          <span><i className="mr-2 inline-block w-6 border-t border-dashed border-zinc-400 align-middle" />Service → Pod</span>
+          <span><i className="mr-2 inline-block h-px w-6 bg-zinc-400 align-middle" />PVC → Pod</span>
         </div>
       </div>
     </main>

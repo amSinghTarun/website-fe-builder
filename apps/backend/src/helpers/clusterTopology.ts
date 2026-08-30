@@ -30,6 +30,7 @@ export type ClusterTopology = {
     owner: string | null;
     createdAt: string | null;
     pvcNames: string[];
+    projectId: string | null;
   }>;
   services: Array<{
     id: string;
@@ -39,6 +40,7 @@ export type ClusterTopology = {
     clusterIP: string | null;
     ports: string[];
     selectedPodIds: string[];
+    projectId: string | null;
   }>;
   pvcs: Array<{
     id: string;
@@ -49,11 +51,18 @@ export type ClusterTopology = {
     accessModes: string[];
     volumeName: string | null;
     mountedByPodIds: string[];
+    projectId: string | null;
   }>;
 };
 
 function resourceId(namespace: string, name: string): string {
   return `${namespace}/${name}`;
+}
+
+function projectIdFromResourceName(name: string): string | null {
+  return name.match(
+    /^sky-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-|$)/i,
+  )?.[1] ?? null;
 }
 
 function selectorMatches(
@@ -102,6 +111,7 @@ export function buildClusterTopology(
       owner: owner ? `${owner.kind}/${owner.name}` : null,
       createdAt: pod.metadata?.creationTimestamp?.toISOString() ?? null,
       pvcNames,
+      projectId: projectIdFromResourceName(name),
     };
   });
 
@@ -146,6 +156,7 @@ export function buildClusterTopology(
             ? [resourceId(podNamespace, podName)]
             : [];
         }),
+        projectId: projectIdFromResourceName(name),
       };
     }),
     pvcs: resources.pvcs.map((pvc) => {
@@ -162,6 +173,7 @@ export function buildClusterTopology(
         mountedByPodIds: pods
           .filter((pod) => pod.namespace === namespace && pod.pvcNames.includes(name))
           .map((pod) => pod.id),
+        projectId: projectIdFromResourceName(name),
       };
     }),
   };

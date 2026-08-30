@@ -11,7 +11,7 @@ describe("buildClusterTopology", () => {
   test("connects services and PVCs to their pods without exposing raw manifests", () => {
     const pod = {
       metadata: {
-        name: "demo-workspace-abc",
+        name: "sky-12345678-1234-1234-1234-123456789abc-workspace-abc",
         namespace: "default",
         labels: { app: "demo-workspace" },
         ownerReferences: [{ apiVersion: "apps/v1", kind: "ReplicaSet", name: "demo-rs", uid: "1", controller: true }],
@@ -19,7 +19,7 @@ describe("buildClusterTopology", () => {
       spec: {
         nodeName: "node-a",
         containers: [{ name: "workspace", image: "private/image:tag" }],
-        volumes: [{ name: "source", persistentVolumeClaim: { claimName: "demo-pvc" } }],
+        volumes: [{ name: "source", persistentVolumeClaim: { claimName: "sky-12345678-1234-1234-1234-123456789abc-pvc" } }],
       },
       status: {
         phase: "Running",
@@ -27,11 +27,11 @@ describe("buildClusterTopology", () => {
       },
     } as V1Pod;
     const service = {
-      metadata: { name: "demo-service", namespace: "default" },
+      metadata: { name: "sky-12345678-1234-1234-1234-123456789abc-workspace-service", namespace: "default" },
       spec: { selector: { app: "demo-workspace" }, type: "ClusterIP", ports: [{ port: 5173 }] },
     } as V1Service;
     const pvc = {
-      metadata: { name: "demo-pvc", namespace: "default" },
+      metadata: { name: "sky-12345678-1234-1234-1234-123456789abc-pvc", namespace: "default" },
       spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: "5Gi" } } },
       status: { phase: "Bound", capacity: { storage: "5Gi" } },
     } as V1PersistentVolumeClaim;
@@ -49,9 +49,17 @@ describe("buildClusterTopology", () => {
     );
 
     expect(result.nodes[0]?.ready).toBe(true);
-    expect(result.pods[0]).toMatchObject({ nodeName: "node-a", ready: true, restarts: 2, pvcNames: ["demo-pvc"] });
-    expect(result.services[0]?.selectedPodIds).toEqual(["default/demo-workspace-abc"]);
-    expect(result.pvcs[0]?.mountedByPodIds).toEqual(["default/demo-workspace-abc"]);
+    expect(result.pods[0]).toMatchObject({
+      nodeName: "node-a",
+      ready: true,
+      restarts: 2,
+      projectId: "12345678-1234-1234-1234-123456789abc",
+      pvcNames: ["sky-12345678-1234-1234-1234-123456789abc-pvc"],
+    });
+    expect(result.services[0]?.selectedPodIds).toEqual(["default/sky-12345678-1234-1234-1234-123456789abc-workspace-abc"]);
+    expect(result.services[0]?.projectId).toBe("12345678-1234-1234-1234-123456789abc");
+    expect(result.pvcs[0]?.mountedByPodIds).toEqual(["default/sky-12345678-1234-1234-1234-123456789abc-workspace-abc"]);
+    expect(result.pvcs[0]?.projectId).toBe("12345678-1234-1234-1234-123456789abc");
     expect(JSON.stringify(result)).not.toContain("private/image:tag");
   });
 
