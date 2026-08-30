@@ -9,6 +9,13 @@ type BrowserObservation = {
   errors: string[];
   mountFound: boolean;
   mountHasContent: boolean;
+  styleCoverage?: {
+    usedClassCount: number;
+    matchedClassCount: number;
+    prominentClassedElementCount: number;
+    prominentLowCoverageCount: number;
+    missingClassNames: string[];
+  };
 };
 
 type PreviewProbe = (
@@ -67,11 +74,68 @@ async function probeBrowserPreview(
         )
       : false;
 
+    // Verify that rendered class names are backed by rules in the loaded CSS.
+    // This is framework-agnostic and catches a disconnected styling pipeline.
+    const styleCoverage = await page.locator("body").evaluate((body) => {
+      const document = (body as any).ownerDocument as any;
+      let loadedCss = "";
+      for (const sheet of Array.from<any>(document.styleSheets)) {
+        try {
+          loadedCss += Array.from<any>(sheet.cssRules ?? [])
+            .map((rule) => rule.cssText)
+            .join("\n");
+        } catch {
+          // Cross-origin stylesheets cannot be inspected through CSSOM.
+        }
+      }
+
+      const elements = Array.from<any>((body as any).querySelectorAll("*"));
+      const usedClassNames = Array.from<string>(
+        new Set<string>(
+          elements.flatMap((element) =>
+            Array.from<string>(element.classList),
+          ),
+        ),
+      );
+      const escapeClassName = (className: string) =>
+        document.defaultView.CSS.escape(className) as string;
+      const hasLoadedRule = (className: string) =>
+        loadedCss.includes(`.${escapeClassName(className)}`);
+      const matchedClassNames = usedClassNames.filter(hasLoadedRule);
+      const missingClassNames = usedClassNames.filter(
+        (className) => !hasLoadedRule(className),
+      );
+
+      const prominentElements = Array.from<any>(
+        new Set(
+          Array.from<any>(
+            (body as any).querySelectorAll(
+              "#root > *, #app > *, header, nav, main, section, article, aside, form, footer",
+            ),
+          ).filter((element) => element.classList.length > 0),
+        ),
+      ).slice(0, 50);
+      const prominentLowCoverageCount = prominentElements.filter((element) => {
+        const classNames = Array.from<string>(element.classList);
+        const matched = classNames.filter(hasLoadedRule).length;
+        return matched / classNames.length < 0.5;
+      }).length;
+
+      return {
+        usedClassCount: usedClassNames.length,
+        matchedClassCount: matchedClassNames.length,
+        prominentClassedElementCount: prominentElements.length,
+        prominentLowCoverageCount,
+        missingClassNames: missingClassNames.slice(0, 40),
+      };
+    });
+
     return {
       httpStatus: response?.status(),
       errors,
       mountFound,
       mountHasContent,
+      styleCoverage,
     };
   } catch (error) {
     if (signal?.aborted) throw new AgentRunCancelledError();
@@ -111,6 +175,32 @@ export async function validateFrontendBrowser(
     failures.push("The preview has no #root or #app mount element");
   } else if (!observation.mountHasContent) {
     failures.push("The frontend mount element rendered no content");
+  }
+  const coverage = observation.styleCoverage;
+  if (coverage) {
+    const matchedRatio =
+      coverage.usedClassCount === 0
+        ? 1
+        : coverage.matchedClassCount / coverage.usedClassCount;
+    const prominentLowCoverageRatio =
+      coverage.prominentClassedElementCount === 0
+        ? 0
+        : coverage.prominentLowCoverageCount /
+          coverage.prominentClassedElementCount;
+    const stylingPipelineDisconnected =
+      (coverage.usedClassCount >= 12 && matchedRatio < 0.15) ||
+      (coverage.missingClassNames.length >= 8 &&
+        coverage.prominentClassedElementCount >= 3 &&
+        prominentLowCoverageRatio >= 0.5);
+
+    if (stylingPipelineDisconnected) {
+      failures.push(
+        `Rendered CSS classes are not backed by loaded style rules (${coverage.matchedClassCount}/${coverage.usedClassCount} matched; ${coverage.prominentLowCoverageCount}/${coverage.prominentClassedElementCount} prominent elements have low class coverage).`,
+      );
+      failures.push(
+        `Missing class rules include: ${coverage.missingClassNames.join(", ")}`,
+      );
+    }
   }
   if (failures.length === 0) return undefined;
 
