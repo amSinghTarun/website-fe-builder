@@ -25,6 +25,7 @@ import {
   validateFrontendLint,
   validateFrontendQuality,
   fingerprintWorkspace,
+  formatRuntimeObservation,
 } from "../runtime";
 import {
   archiveLargeUpdateFileArguments,
@@ -405,6 +406,11 @@ export class GeminiProvider {
         const repairMessage = runtimeRepairMessage(initialRuntimeState);
         if (repairMessage) {
           newMessage = [{ text: args.message }, { text: repairMessage }];
+        } else if (initialRuntimeState?.status === "running") {
+          newMessage = [
+            { text: args.message },
+            { text: formatRuntimeObservation(initialRuntimeState) },
+          ];
         }
       }
 

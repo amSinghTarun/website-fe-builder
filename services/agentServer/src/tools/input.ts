@@ -11,7 +11,7 @@ export const inputTools = {
     declaration: {
       name: "takeUserInput",
       description:
-        "Ask any task related doubt or guidance or question to user wherever you want their input or you have to decide on anything you think is relative to user",
+        "Ask for a missing material product decision or required secret only. Never use this for browser, console, build, log, toolchain, or other diagnostics the agent can inspect itself.",
       parametersJsonSchema: {
         type: "object",
         properties: {
