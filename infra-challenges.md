@@ -40,14 +40,13 @@ The backend reconciles:
 
 | Resource | Name | Purpose |
 | --- | --- | --- |
-| PVC | `<runtimeId>-pvc` | Durable workspace shared by the three project workloads |
+| PVC | `<runtimeId>-pvc` | Durable workspace shared by both project pods |
 | Deployment | `<runtimeId>-workspace` | Node/Vite user application |
 | Service | `<runtimeId>-workspace-service` | ClusterIP on port `5173` |
-| Deployment | `<runtimeId>-agent-deployment` | Gemini agent and tools |
+| Deployment | `<runtimeId>-agent-deployment` | Gemini agent plus recovery/backup sidecar |
 | Service | `<runtimeId>-agent-service` | ClusterIP on port `3000` |
-| Deployment | `<runtimeId>-recovery` | Snapshot restore, replay and backup cron |
 
-The three Deployments mount the same `ReadWriteOnce` project PVC. The workspace mounts it at `/app`; the agent and recovery containers mount it at `/user-app`.
+Both Deployments mount the same `ReadWriteOnce` project PVC. The workspace mounts it at `/app`; the agent and recovery containers in the control pod mount it at `/user-app`.
 
 ## Challenge 1: database IDs and Kubernetes names were mixed
 
@@ -238,7 +237,7 @@ NODE_EXTRA_CA_CERTS=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 
 for backend/agent processes that call the Kubernetes API. TLS verification remains enabled; the fix does not disable certificate checking.
 
-## Challenge 8: one `ReadWriteOnce` PVC across three Deployments
+## Challenge 8: one `ReadWriteOnce` PVC across multiple project pods
 
 ### Symptom
 
@@ -253,15 +252,17 @@ for backend/agent processes that call the Kubernetes API. TLS verification remai
 
 ### Solution
 
-- Set `strategy: { type: "Recreate" }` on workspace, agent and recovery Deployments.
-- Add required pod affinity so agent and recovery follow the workspace pod's node.
+- Set `strategy: { type: "Recreate" }` on the workspace and combined control Deployments.
+- Run recovery/cron as a restartable init-container sidecar in the agent pod.
+- Gate later startup on the restore-ready marker, then start the agent only after the workspace is ready.
+- Add required pod affinity so the control pod follows the workspace pod's node.
 - Add explicit resource requests/limits to avoid oversized Autopilot defaults.
 - Make init-container requests small and bounded.
 - Refresh existing Deployments during CI so older projects receive the same strategy, affinity, image and environment contracts.
 
 ### Remaining concern
 
-This topology is workable for the current prototype but is not a portable shared-filesystem design. A production version should consider one multi-container pod, `ReadWriteMany` storage, or a different workspace service boundary.
+This topology is workable for the current prototype but is not a portable shared-filesystem design. A production version should consider `ReadWriteMany` storage or a different workspace service boundary.
 
 ## Challenge 9: image drift between shared services and project runtimes
 
@@ -637,7 +638,7 @@ kubectl get deployment sky-backend sky-frontend -n default \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[0].image}{"\n"}{end}'
 ```
 
-For a project, inspect its agent and recovery image tags and compare them with the deployed commit.
+For a project, inspect both container image tags in its control Deployment and compare them with the deployed commit.
 
 ### 4. Confirm a project runtime
 
@@ -645,7 +646,7 @@ Given runtime ID `<runtimeId>`:
 
 ```bash
 kubectl get deployment,pod -n default \
-  -l 'app in (<runtimeId>-workspace,<runtimeId>-agent,<runtimeId>-recovery-cron)'
+  -l 'app in (<runtimeId>-workspace,<runtimeId>-agent)'
 kubectl get service <runtimeId>-workspace-service <runtimeId>-agent-service -n default
 kubectl get pvc <runtimeId>-pvc -n default
 ```
@@ -657,12 +658,14 @@ same `app` labels as the Deployments and Pods.
 
 ```bash
 kubectl logs deployment/<runtimeId>-workspace -n default --tail=200
-kubectl logs deployment/<runtimeId>-agent-deployment -n default --tail=200
-kubectl logs deployment/<runtimeId>-recovery -n default --tail=200
+kubectl logs deployment/<runtimeId>-agent-deployment -n default \
+  -c <runtimeId>-agent --tail=200
+kubectl logs deployment/<runtimeId>-agent-deployment -n default \
+  -c <runtimeId>-recovery-cron --tail=200
 kubectl logs deployment/sky-backend -n default --tail=300
 ```
 
-Check workspace/recovery first when the agent init container is waiting.
+Check the recovery sidecar and workspace first when the agent init container is waiting.
 
 ### 6. Verify public routes
 
@@ -693,7 +696,7 @@ The project URL must contain the runtime ID, not the raw database UUID.
 2. **Shared namespace:** project-level RBAC and resource isolation are limited.
 3. **No lifecycle cleanup:** deleted/abandoned projects can leave Deployments, Services, PVCs and GCS objects.
 4. **No transactional provisioning:** partial resource creation is reconciled later but not rolled back.
-5. **RWO coupling:** three Deployments sharing one disk remains topology-sensitive.
+5. **RWO coupling:** two pods sharing one disk remains topology-sensitive.
 6. **Startup installs:** npm and Alpine package downloads make cold start slow and externally dependent.
 7. **Snapshot retention:** there is no object retention, pruning or quota policy.
 8. **Single shared proxies:** both Nginx Deployments currently run one replica.

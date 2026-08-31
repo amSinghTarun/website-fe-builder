@@ -72,6 +72,28 @@ async function ensurePvc(body: any): Promise<any> {
   }
 }
 
+async function disableLegacyRecoveryDeployment(
+  databaseProjectId: string,
+): Promise<void> {
+  const runtimeId = toRuntimeId(databaseProjectId);
+  try {
+    const existing = await k8sAppsApi.readNamespacedDeployment({
+      name: `${runtimeId}-recovery`,
+      namespace: "default",
+    });
+    if (!existing.spec || existing.spec.replicas === 0) return;
+
+    existing.spec.replicas = 0;
+    await k8sAppsApi.replaceNamespacedDeployment({
+      name: `${runtimeId}-recovery`,
+      namespace: "default",
+      body: existing,
+    });
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+}
+
 export const spinupK8sResources = async (
   feLibrary: string,
   databaseProjectId: string,
@@ -85,12 +107,10 @@ export const spinupK8sResources = async (
   const workspace = await applyDeployment(
     k8sConfs.workspaceDeploymentSpec(feLibrary, databaseProjectId),
   );
-  const recovery_cron = await applyDeployment(
-    k8sConfs.recoveryDeploymentSpec(databaseProjectId),
-  );
   const agent = await applyDeployment(
     k8sConfs.agentDeploymentSpec(databaseProjectId),
   );
+  await disableLegacyRecoveryDeployment(databaseProjectId);
 
   // create services
   const agentClusterIpService = await applyService(

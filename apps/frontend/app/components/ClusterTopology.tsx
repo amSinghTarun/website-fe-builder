@@ -35,6 +35,12 @@ type ClusterTopologyData = {
     createdAt: string | null;
     pvcNames: string[];
     projectId: string | null;
+    containers: Array<{
+      name: string;
+      role: "container" | "sidecar" | "init";
+      ready: boolean;
+      restarts: number;
+    }>;
   }>;
   services: Array<{
     id: string;
@@ -62,7 +68,7 @@ type ClusterTopologyData = {
 type Point = { x: number; y: number };
 
 const NODE_WIDTH = 360;
-const POD_HEIGHT = 66;
+const POD_HEIGHT = 88;
 const RESOURCE_WIDTH = 230;
 const RESOURCE_HEIGHT = 72;
 
@@ -105,6 +111,15 @@ function podColor(pod: ClusterTopologyData["pods"][number]): string {
   if (pod.phase === "Pending") return "#f59e0b";
   if (pod.phase === "Failed") return "#ef4444";
   return "#71717a";
+}
+
+function containerLabel(
+  container: ClusterTopologyData["pods"][number]["containers"][number],
+): string {
+  const shortName = container.name
+    .replace(/^sky-[0-9a-f-]+-/i, "")
+    .replace(/-cron$/, "");
+  return container.role === "sidecar" ? `${shortName} sidecar` : shortName;
 }
 
 function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
@@ -281,19 +296,33 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
               const projectColor = colorForProject(pod.projectId);
               return (
                 <g key={pod.id}>
-                  <title>{`${pod.name}\n${pod.owner ?? "No controller"}\n${pod.phase}, ${pod.restarts} restarts`}</title>
+                  <title>{`${pod.name}\n${pod.owner ?? "No controller"}\n${pod.phase}, ${pod.restarts} restarts\n${pod.containers.map((container) => `${containerLabel(container)}: ${container.ready ? "ready" : "not ready"}`).join("\n")}`}</title>
                   <rect x={x + 16} y={podY} width={NODE_WIDTH - 32} height={POD_HEIGHT} rx="10" fill={projectColor.fill} stroke={projectColor.stroke} strokeOpacity="0.72" />
                   <rect x={x + 16} y={podY} width="4" height={POD_HEIGHT} rx="2" fill={podColor(pod)} />
-                  <circle cx={x + 38} cy={podY + 24} r="8" fill={projectColor.fill} stroke={projectColor.stroke} />
-                  <text x={x + 55} y={podY + 23} fill="#e4e4e7" fontSize="11" fontWeight="700">
+                  <circle cx={x + 38} cy={podY + 22} r="8" fill={projectColor.fill} stroke={projectColor.stroke} />
+                  <text x={x + 55} y={podY + 21} fill="#e4e4e7" fontSize="11" fontWeight="700">
                     {displayName(pod.name, 39)}
                   </text>
-                  <text x={x + 55} y={podY + 43} fill="#71717a" fontSize="9">
+                  <text x={x + 55} y={podY + 40} fill="#71717a" fontSize="9">
                     {pod.phase} · {pod.ready ? "ready" : "not ready"} · {pod.restarts} restarts
                   </text>
-                  <text x={x + NODE_WIDTH - 22} y={podY + 43} textAnchor="end" fill={projectColor.text} fontSize="8">
+                  <text x={x + NODE_WIDTH - 22} y={podY + 40} textAnchor="end" fill={projectColor.text} fontSize="8">
                     {pod.projectId?.slice(0, 8) ?? "PLATFORM"}
                   </text>
+                  <text x={x + 28} y={podY + 65} fill={projectColor.text} fontSize="8.5" fontWeight="600">
+                    {pod.containers.length > 0
+                      ? pod.containers.map(containerLabel).join("  +  ")
+                      : "container details unavailable"}
+                  </text>
+                  {pod.containers.map((container, containerIndex) => (
+                    <circle
+                      key={`${pod.id}-${container.name}`}
+                      cx={x + 28 + containerIndex * 9}
+                      cy={podY + 77}
+                      r="2.5"
+                      fill={container.ready ? "#22c55e" : "#f59e0b"}
+                    />
+                  ))}
                 </g>
               );
             })}
@@ -439,7 +468,7 @@ export function ClusterTopology() {
             </div>
             <h1 className="text-3xl font-black uppercase tracking-[-0.04em] md:text-5xl">See where everything runs.</h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
-              Pods are nested inside the Nodes that schedule them. Cyan lines show Service routing; violet lines show PVC mounts.
+              Pods are nested inside their Nodes. Each pod lists its containers, including the Agent + Recovery sidecar control pod. Lines show Service routing and shared PVC mounts.
             </p>
           </div>
           <div className="flex items-center gap-3">

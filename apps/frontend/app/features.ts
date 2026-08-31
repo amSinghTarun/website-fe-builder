@@ -16,8 +16,8 @@ export const features = [
     status: "DEDICATED",
     title: "Kubernetes Runtime",
     description:
-      "Every project gets dedicated workspace, agent and recovery workloads.",
-    detail: "Shared namespace · project-scoped services",
+      "Every project gets a workspace pod and an agent/recovery control pod.",
+    detail: "Two pods · shared PVC · project-scoped services",
   },
   {
     icon: Save,

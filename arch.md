@@ -36,9 +36,11 @@ flowchart LR
     DynamicProxy["Dynamic Nginx project router"]
 
     subgraph ProjectRuntime["Per-project Kubernetes runtime"]
-        Workspace["Vite workspace"]
-        Agent["Gemini agent server"]
-        Recovery["Recovery and backup worker"]
+        Workspace["Workspace pod: Vite"]
+        subgraph ControlPod["Control pod"]
+            Recovery["Recovery and backup sidecar"]
+            Agent["Gemini agent container"]
+        end
         PVC[("Project PVC")]
         Workspace --- PVC
         Agent --- PVC
@@ -138,12 +140,12 @@ The backend is a Fastify server on port `3001`. Zod schemas provide request/resp
 `src/helpers/k8s.ts` uses in-cluster credentials in Kubernetes and the default kubeconfig locally, then creates these resources in the `default` namespace:
 
 1. One 500 Mi `ReadWriteOnce` PVC.
-2. Workspace, recovery, and agent Deployments.
+2. A workspace Deployment and a combined agent/recovery Deployment.
 3. Workspace and agent ClusterIP Services.
 
-The TypeScript manifest builders live under `apps/backend/k8s`. Every builder accepts the raw `databaseProjectId` and derives its Kubernetes prefix with `toRuntimeId`; callers never pass a prefixed ID into a manifest builder. Every resource is therefore prefixed exactly once with `sky-<database project UUID>`. The workspace initializes `my-app` from the chosen Vite template and mounts the PVC at `/app`. The agent and recovery pods mount the same PVC at `/user-app`. The recovery and agent pods use `k8s-service-account`; their database and GCP project values come from the `sky-secrets` Kubernetes Secret.
+The TypeScript manifest builders live under `apps/backend/k8s`. Every builder accepts the raw `databaseProjectId` and derives its Kubernetes prefix with `toRuntimeId`; callers never pass a prefixed ID into a manifest builder. Every resource is therefore prefixed exactly once with `sky-<database project UUID>`. The workspace initializes `my-app` from the chosen Vite template and mounts the PVC at `/app`. The control pod mounts it at `/user-app` for both its recovery sidecar and agent container. That pod uses `k8s-service-account`; its database and GCP access come from the `sky-secrets` Kubernetes Secret and Workload Identity.
 
-The backend is therefore the boundary between stable platform infrastructure and ephemeral project-specific infrastructure. It injects the raw `DATABASE_PROJECT_ID` as the single project identity plus `WORKSPACE_PATH`, workspace Service/container details, and the application/agent ports. Code that needs a Kubernetes name derives it with the shared `toRuntimeId(databaseProjectId)` helper. Bun processes that call the Kubernetes API explicitly load the mounted service-account CA through `NODE_EXTRA_CA_CERTS`; TLS verification remains enabled. Each generated container also declares explicit resource requests and limits so GKE Autopilot does not assign its much larger defaults to lightweight runtime and init containers. The three PVC-mounted Deployments use the `Recreate` update strategy, avoiding duplicate rolling pods contending for `ReadWriteOnce` storage and temporary quota. Required pod affinity places agent and recovery pods on the workspace pod's node, which is necessary when all three mount the same `ReadWriteOnce` disk. The agent reserves 256 MiB but may use up to 2 GiB, leaving enough schedulable capacity when GKE's system balloon expands between restarts. Vite keeps host validation enabled and receives `project.tarun.co` through `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, allowing the public iframe host without accepting arbitrary domains.
+The backend is therefore the boundary between stable platform infrastructure and ephemeral project-specific infrastructure. It injects the raw `DATABASE_PROJECT_ID` as the single project identity plus `WORKSPACE_PATH`, workspace Service/container details, and the application/agent ports. Code that needs a Kubernetes name derives it with the shared `toRuntimeId(databaseProjectId)` helper. Bun processes that call the Kubernetes API explicitly load the mounted service-account CA through `NODE_EXTRA_CA_CERTS`; TLS verification remains enabled. Each generated container also declares explicit resource requests and limits so GKE Autopilot does not assign its much larger defaults. Both PVC-mounted Deployments use the `Recreate` update strategy. Required pod affinity places the combined control pod on the workspace pod's node for the shared `ReadWriteOnce` disk. Recovery runs first as a restartable init-container sidecar; its startup probe waits for `.sky-restore-ready`, then the existing workspace-wait init container may complete and the main agent container starts. The agent reserves 256 MiB but may use up to 2 GiB. Vite keeps host validation enabled and receives `project.tarun.co` through `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`, allowing the public iframe host without accepting arbitrary domains.
 
 ## 7. `packages/db`: shared persistence layer
 
@@ -307,7 +309,7 @@ The active dynamic route shapes are intended to be:
 
 `.github/workflows/services.yml` builds and pushes the agent, recovery, backend, and frontend images on every push to `main`. The deployment workflow runs only after that image workflow succeeds, checks out the same commit, upserts `sky-secrets`, applies platform/application manifests, removes retired WebSocket relay resources, pins shared and existing per-project workloads to the immutable commit SHA, refreshes existing project services, waits for rollouts, and applies pending Prisma migrations. The backend receives that SHA as `RUNTIME_IMAGE_TAG`, so newly created project Deployments use the same immutable agent/recovery images instead of depending on mutable `latest` resolution. If the GitHub `JWT_SECRET` is unset, the workflow preserves the cluster's current value or generates one only for a new cluster; a stable GitHub secret is still recommended for disaster recovery. Runtime Roles and RoleBindings are a cluster bootstrap prerequisite: apply `infra/app-runtime-monitor-rbac.yml` and `infra/backend-rbac.yml` once with a cluster-admin context, and apply them again whenever their rules change. The regular deployment identity intentionally does not manage RBAC.
 
-`setup_workload_identity.sh` creates `k8s-service-account` and grants its direct GKE workload principal Vertex AI User on the project plus object-admin/bucket-reader access scoped to `lovable_backup_snapshots`. Per-project agent and recovery pods reference that Kubernetes account so Google client libraries can use short-lived Application Default Credentials without embedded keys.
+`setup_workload_identity.sh` creates `k8s-service-account` and grants its direct GKE workload principal Vertex AI User on the project plus object-admin/bucket-reader access scoped to `lovable_backup_snapshots`. Each combined agent/recovery control pod references that Kubernetes account so Google client libraries can use short-lived Application Default Credentials without embedded keys.
 
 ## 13. End-to-end flows
 
@@ -323,7 +325,7 @@ The active dynamic route shapes are intended to be:
 
 1. The builder calls `/newChat` with the raw database project UUID.
 2. The backend stores `Project.initialPrompt` and provisions the runtime; the agent stores the conversation row when streaming begins.
-3. The backend derives the `sky-<UUID>` runtime ID and creates the per-project PVC, three Deployments, and two Services.
+3. The backend derives the `sky-<UUID>` runtime ID and creates the per-project PVC, two Deployments, and two Services.
 4. The workspace pod installs Git, Python 3/pip, creates `my-app`, installs dependencies, and runs Vite.
 5. The frontend calls `/sendUserMessage`; the backend waits for the agent Service, forwards SSE events, and the iframe uses the returned workspace URL.
 
@@ -373,7 +375,7 @@ These are important when reasoning about the repository as it exists today:
 1. **The generated-file panel is read-only.** It displays project source from the agent file endpoint, but browser-side editing is not implemented.
 2. **Assistant transcript storage is asymmetric.** The agent stores generated text in the user run's `output`; the frontend reconstructs that output as an assistant message instead of using a separate assistant database row.
 3. **Kubernetes provisioning has no rollback or cleanup.** Repeating `/newChat` reconciles named resources, but a failed partial creation is not rolled back and abandoned projects are not garbage-collected.
-4. **A `ReadWriteOnce` PVC is shared across three Deployments.** This depends on the storage class and pod scheduling; it is not a portable multi-node sharing model.
+4. **A `ReadWriteOnce` PVC is shared across the workspace and control pods.** This depends on the storage class and pod scheduling; it is not a portable multi-node sharing model.
 5. **Namespace-level monitoring RBAC is not tenant-isolated.** The shared project ServiceAccount can list pods and read logs across the `default` namespace. Production should use per-project namespaces/ServiceAccounts or a trusted observer service.
 6. **Recovery is still prototype-grade.** ZIP creation, a snapshot high-water mark, startup coordination, and replay are connected, but retention, cleanup, concurrent backups, and failure recovery still need hardening.
 7. **Database migrations run from the deployed backend image.** After all shared Deployments become ready, the deployment workflow executes `prisma migrate deploy` inside the backend pod. The current runtime-monitor change does not add a new schema migration.

@@ -495,6 +495,18 @@ sequenceDiagram
 | `services/recovery_cron/src/service/recovery.ts` | Restore snapshot, mark workspace ready and replay newer tool calls |
 | `services/recovery_cron/src/storage/gcp.ts` | GCS bucket/object operations |
 
+## Current two-pod runtime topology
+
+The project runtime now uses two Deployments instead of three:
+
+- the workspace Deployment runs Vite in its own pod;
+- the agent Deployment runs the Gemini agent as its main container and recovery/backup as a restartable init-container sidecar;
+- the recovery sidecar writes `.sky-restore-ready` before Kubernetes advances to the workspace-wait init container;
+- both containers share the control pod's `/user-app` PVC mount and service account;
+- provisioning scales the retired standalone `<runtimeId>-recovery` Deployment to zero when that project is next reconciled, using the backend's existing update permission.
+
+This keeps recovery ordering and independent container restarts while reducing the steady-state project pod count from three to two.
+
 ## Database impact
 
 No new Prisma schema change was required for the later resume, preview, activity, quality or completion-message work.
@@ -538,7 +550,7 @@ At commit `4d9d5fe`, the complete repository suite reported **66 passing tests**
 ## Important remaining limitations
 
 1. All project workloads currently share the `default` namespace.
-2. Project PVCs are `ReadWriteOnce`, so the topology depends on pod affinity and the current storage class.
+2. Project PVCs are `ReadWriteOnce`, so the two-pod topology depends on pod affinity and the current storage class.
 3. Runtime creation has no transactional rollback or abandoned-project garbage collection.
 4. The generated-file view is read-only.
 5. Authentication, CSRF protection, rate limiting and TLS are still prototype-grade.
@@ -557,8 +569,8 @@ To understand the implementation in runtime order:
 3. `apps/backend/src/helpers/k8s.ts`
 4. `apps/backend/k8s/services/workspace/deployment.ts`
 5. `apps/backend/k8s/services/agent/deployment.ts`
-6. `apps/backend/k8s/services/recovery_cron/deployment.ts`
-7. `services/recovery_cron/src/service/recovery.ts`
+6. `services/recovery_cron/src/service/recovery.ts`
+7. `services/recovery_cron/src/service/cron.ts`
 8. `services/agentServer/src/index.ts`
 9. `services/agentServer/src/providers/gemini.ts`
 10. `services/agentServer/src/runtime/AppRuntimeMonitor.ts`
@@ -569,7 +581,6 @@ To understand the implementation in runtime order:
 15. `infra/ingress.yml`
 16. `infra/dynamic_nginx/deployment.yml`
 17. `.github/workflows/services.yml`
-18. `.github/scripts/detect-components.sh`
-19. `.github/workflows/infra.yml`
+18. `.github/workflows/infra.yml`
 
 For the operational reasoning behind these contracts, continue with [`infra-challenges.md`](./infra-challenges.md).

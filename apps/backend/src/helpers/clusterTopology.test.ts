@@ -55,12 +55,48 @@ describe("buildClusterTopology", () => {
       restarts: 2,
       projectId: "12345678-1234-1234-1234-123456789abc",
       pvcNames: ["sky-12345678-1234-1234-1234-123456789abc-pvc"],
+      containers: [
+        { name: "workspace", role: "container", ready: true, restarts: 2 },
+      ],
     });
     expect(result.services[0]?.selectedPodIds).toEqual(["default/sky-12345678-1234-1234-1234-123456789abc-workspace-abc"]);
     expect(result.services[0]?.projectId).toBe("12345678-1234-1234-1234-123456789abc");
     expect(result.pvcs[0]?.mountedByPodIds).toEqual(["default/sky-12345678-1234-1234-1234-123456789abc-workspace-abc"]);
     expect(result.pvcs[0]?.projectId).toBe("12345678-1234-1234-1234-123456789abc");
     expect(JSON.stringify(result)).not.toContain("private/image:tag");
+  });
+
+  test("identifies restartable init containers as sidecars", () => {
+    const pod = {
+      metadata: { name: "sky-12345678-1234-1234-1234-123456789abc-agent-pod" },
+      spec: {
+        containers: [{ name: "agent" }],
+        initContainers: [
+          { name: "recovery-cron", restartPolicy: "Always" },
+          { name: "wait-for-workspace" },
+        ],
+      },
+      status: {
+        containerStatuses: [{ name: "agent", ready: true, restartCount: 0 }],
+        initContainerStatuses: [
+          { name: "recovery-cron", ready: true, restartCount: 1 },
+          { name: "wait-for-workspace", ready: false, restartCount: 0 },
+        ],
+      },
+    } as V1Pod;
+
+    const result = buildClusterTopology({
+      nodes: [],
+      pods: [pod],
+      services: [],
+      pvcs: [],
+    });
+
+    expect(result.pods[0]?.containers).toEqual([
+      { name: "agent", role: "container", ready: true, restarts: 0 },
+      { name: "recovery-cron", role: "sidecar", ready: true, restarts: 1 },
+      { name: "wait-for-workspace", role: "init", ready: false, restarts: 0 },
+    ]);
   });
 
   test("does not connect a selector-less service to every pod", () => {

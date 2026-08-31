@@ -31,6 +31,12 @@ export type ClusterTopology = {
     createdAt: string | null;
     pvcNames: string[];
     projectId: string | null;
+    containers: Array<{
+      name: string;
+      role: "container" | "sidecar" | "init";
+      ready: boolean;
+      restarts: number;
+    }>;
   }>;
   services: Array<{
     id: string;
@@ -87,6 +93,11 @@ export function buildClusterTopology(
     const name = pod.metadata?.name ?? "unknown-pod";
     const namespace = pod.metadata?.namespace ?? NAMESPACE;
     const containerStatuses = pod.status?.containerStatuses ?? [];
+    const initContainerStatuses = pod.status?.initContainerStatuses ?? [];
+    const statusFor = (name: string, init: boolean) =>
+      (init ? initContainerStatuses : containerStatuses).find(
+        (status) => status.name === name,
+      );
     const pvcNames = (pod.spec?.volumes ?? []).flatMap((volume) =>
       volume.persistentVolumeClaim?.claimName
         ? [volume.persistentVolumeClaim.claimName]
@@ -112,6 +123,29 @@ export function buildClusterTopology(
       createdAt: pod.metadata?.creationTimestamp?.toISOString() ?? null,
       pvcNames,
       projectId: projectIdFromResourceName(name),
+      containers: [
+        ...(pod.spec?.containers ?? []).map((container) => {
+          const status = statusFor(container.name, false);
+          return {
+            name: container.name,
+            role: "container" as const,
+            ready: status?.ready === true,
+            restarts: status?.restartCount ?? 0,
+          };
+        }),
+        ...(pod.spec?.initContainers ?? []).map((container) => {
+          const status = statusFor(container.name, true);
+          return {
+            name: container.name,
+            role:
+              container.restartPolicy === "Always"
+                ? ("sidecar" as const)
+                : ("init" as const),
+            ready: status?.ready === true,
+            restarts: status?.restartCount ?? 0,
+          };
+        }),
+      ],
     };
   });
 
