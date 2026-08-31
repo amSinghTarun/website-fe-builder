@@ -103,8 +103,9 @@ export function LandingPage() {
       }
 
       setShowProjects(false);
+      const runtimeIsReady = result?.data?.status === "ready";
       navigate(
-        `/app?project=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.title)}&resume=1`,
+        `/app?project=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.title)}${runtimeIsReady ? "" : "&resume=1"}`,
       );
     } catch (error) {
       toast.error(

@@ -516,6 +516,19 @@ app.post(
       });
     }
 
+    const currentRuntime = await getProjectRuntimeStatus(project.id);
+
+    if (currentRuntime.status === "ready") {
+      return reply.code(200).send({
+        status: "success",
+        message: "Project runtime is already ready",
+        data: {
+          ...project,
+          ...currentRuntime,
+        },
+      });
+    }
+
     const runtime = await spinupK8sResources(project.library, project.id);
 
     return reply.code(202).send({
@@ -525,6 +538,7 @@ app.post(
         ...project,
         ...runtime,
         ...projectRuntimeRoutes(project.id),
+        status: "starting",
       },
     });
   },

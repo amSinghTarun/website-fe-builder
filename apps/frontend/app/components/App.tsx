@@ -926,25 +926,15 @@ export function App() {
                 <div className="w-full flex justify-start">
                   <div
                     aria-live="polite"
-                    className={`w-fit max-w-full p-2 px-3 rounded-lg rounded-bl-none bg-zinc-900 flex items-start gap-2 ${
-                      toolActivity?.phase === "failed"
-                        ? "text-xs text-red-400/70"
-                        : toolActivity
-                          ? "text-xs text-zinc-500"
-                          : "text-sm text-cyan-300"
-                    }`}
+                    className="flex w-fit max-w-full items-start gap-2 rounded-lg rounded-bl-none bg-zinc-900 p-2 px-3 text-sm text-cyan-300"
                   >
-                    {toolActivity?.phase === "completed" ? (
-                      <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
-                    ) : toolActivity?.phase === "failed" ? (
-                      <AlertCircle size={12} className="mt-0.5 shrink-0" />
-                    ) : (
-                      <Loader2
-                        size={toolActivity ? 12 : 14}
-                        className="mt-0.5 shrink-0 animate-spin"
-                      />
+                    <Loader2
+                      size={14}
+                      className="mt-0.5 shrink-0 animate-spin"
+                    />
+                    {toolActivity?.summary && (
+                      <span>{toolActivity.summary}</span>
                     )}
-                    <span>{toolActivity?.summary ?? "Generating..."}</span>
                   </div>
                 </div>
               )}
