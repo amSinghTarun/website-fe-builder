@@ -13,8 +13,10 @@ import {
   createFrontendSystemPrompt,
   completionAgentPrompt,
   completionFallbackMessage,
+  intentClassifierPrompt,
   summariseAgentPrompt,
   type FrontendLibrary,
+  type RequestIntentResult,
 } from "../systemPrompts";
 import { prisma, type ConversationRunStatus } from "@sky/db";
 import {
@@ -47,8 +49,12 @@ import {
   type PlanTask,
 } from "../agentLoop/helpers";
 import { startSubAgentLifecycle } from "../subAgents/lifecycle";
+import { serializeAuditPayload } from "../agentLoop/audit";
+import { implementationModel, supportModel } from "./models";
 
 const CONTEXT_COMPACTION_TOKEN_THRESHOLD = 20_000;
+const IMPLEMENTATION_CONFIDENCE_THRESHOLD = 0.7;
+const MAX_NO_MUTATION_RETRIES = 2;
 
 export class GeminiProvider {
   private static sessions: {
@@ -189,7 +195,7 @@ export class GeminiProvider {
       args.newSystemPrompt,
     );
     const chat = GeminiProvider.geminiClient.chats.create({
-      model: "gemini-2.5-flash",
+      model: implementationModel,
       history: args.history ?? [],
       config: createGeminiGenerationConfig({
         systemInstruction,
@@ -199,12 +205,98 @@ export class GeminiProvider {
     return { chat, systemInstruction };
   }
 
+  // Run only after AUTO returns prose without changing an implementation request.
+  private static async classifyRequestIntent(
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<RequestIntentResult> {
+    try {
+      const response = await GeminiProvider.geminiClient.models.generateContent({
+        model: supportModel,
+        contents: JSON.stringify({ userMessage: message }),
+        config: {
+          systemInstruction: intentClassifierPrompt,
+          responseMimeType: "application/json",
+          responseJsonSchema: {
+            type: "object",
+            properties: {
+              intent: {
+                type: "string",
+                enum: ["implementation", "informational", "ambiguous"],
+              },
+              confidence: { type: "number", minimum: 0, maximum: 1 },
+              reason: { type: "string" },
+            },
+            required: ["intent", "confidence", "reason"],
+            additionalProperties: false,
+          },
+          temperature: 0,
+          maxOutputTokens: 160,
+          ...(signal && { abortSignal: signal }),
+        },
+      });
+
+      if (!response.text?.trim()) {
+        return {
+          intent: "ambiguous",
+          confidence: 0,
+          reason: "No classifier response",
+        };
+      }
+
+      const parsed = JSON.parse(response.text) as RequestIntentResult;
+      const confidence = Number(parsed.confidence);
+      return {
+        intent:
+          parsed.intent === "implementation" || parsed.intent === "informational"
+            ? parsed.intent
+            : "ambiguous",
+        confidence: Number.isFinite(confidence)
+          ? Math.min(1, Math.max(0, confidence))
+          : 0,
+        reason: typeof parsed.reason === "string" ? parsed.reason : "",
+      };
+    } catch (error) {
+      if (signal?.aborted) throw new AgentRunCancelledError();
+      console.error("Unable to classify request intent:", error);
+      return {
+        intent: "ambiguous",
+        confidence: 0,
+        reason: "Classifier unavailable",
+      };
+    }
+  }
+
+  // Store internal diagnostics as non-replayable LOOP records for later audits.
+  private async persistRunEvent(args: {
+    runId: number;
+    agentId: string;
+    event: string;
+    payload: unknown;
+  }): Promise<void> {
+    try {
+      await prisma.conversationHistory.create({
+        data: {
+          projectId: this.projectId,
+          agentId: args.agentId,
+          from: "LOOP",
+          type: "TOOL_CALL",
+          toolCall: args.event,
+          contents: JSON.stringify({ runId: args.runId, event: args.event }),
+          output: serializeAuditPayload(args.payload),
+        },
+      });
+    } catch (error) {
+      console.error(`Unable to persist ${args.event}:`, error);
+    }
+  }
+
   private static async summariseChat(
     history: Content[],
     previousSummary?: string,
   ): Promise<string> {
     const summariseAgent = GeminiProvider.geminiClient.chats.create({
-      model: "gemini-2.5-flash",
+      model: supportModel,
       config: {
         systemInstruction: summariseAgentPrompt,
       },
@@ -244,7 +336,7 @@ export class GeminiProvider {
   }): Promise<string> {
     try {
       const completionAgent = GeminiProvider.geminiClient.chats.create({
-        model: "gemini-2.5-flash",
+        model: supportModel,
         config: { systemInstruction: completionAgentPrompt },
       });
       const response = await completionAgent.sendMessage({
@@ -272,6 +364,7 @@ export class GeminiProvider {
     },
     validation: "runtime" | "diagnostic" | "functional" | "completion" = "runtime",
     signal?: AbortSignal,
+    audit?: { runId: number; agentId: string },
   ): Promise<AppRuntimeState | undefined> {
     const configured = getConfiguredAppRuntimeMonitor(this.projectId);
 
@@ -326,6 +419,13 @@ export class GeminiProvider {
     }
 
     handler.onChunk?.({ type: "runtime", response: state });
+    if (audit) {
+      await this.persistRunEvent({
+        ...audit,
+        event: "runtimeObservation",
+        payload: { validation, state },
+      });
+    }
     return state;
   }
 
@@ -373,16 +473,27 @@ export class GeminiProvider {
       const completedTaskIds = new Set<string>();
       let workspaceChanged = false;
       let runtimeVerified = false;
+      let requestIntent: RequestIntentResult | undefined;
+      let forceWorkspaceMutation = false;
+      let noMutationRetries = 0;
       let toolActivitySequence = 0;
       const repairAttemptsByFingerprint = new Map<string, number>();
 
-      const runtimeRepairMessage = (
+      const runtimeRepairMessage = async (
         runtimeState: Awaited<ReturnType<typeof this.observeRuntime>>,
-      ): string | undefined => {
+      ): Promise<string | undefined> => {
         const decision = evaluateRuntimeRepair(
           runtimeState,
           repairAttemptsByFingerprint,
         );
+        if (decision.action !== "none") {
+          await this.persistRunEvent({
+            runId: conversationRecord!.id,
+            agentId: args.id,
+            event: "runtimeRepairAttempt",
+            payload: { decision, runtimeState },
+          });
+        }
         if (decision.action === "retry") return decision.message;
         if (decision.action !== "blocked") return undefined;
 
@@ -399,11 +510,14 @@ export class GeminiProvider {
       // existing runtime and lint failures even when the user only asks why.
       if (args.id === "1") {
         const initialRuntimeState = await abortable(
-          this.observeRuntime(args.handler, "diagnostic", args.signal),
+          this.observeRuntime(args.handler, "diagnostic", args.signal, {
+            runId: conversationRecord.id,
+            agentId: args.id,
+          }),
           args.signal,
         );
         runtimeVerified = initialRuntimeState?.status === "running";
-        const repairMessage = runtimeRepairMessage(initialRuntimeState);
+        const repairMessage = await runtimeRepairMessage(initialRuntimeState);
         if (repairMessage) {
           newMessage = [{ text: args.message }, { text: repairMessage }];
         } else if (initialRuntimeState?.status === "running") {
@@ -439,8 +553,10 @@ export class GeminiProvider {
               systemInstruction: session.systemInstruction,
               functionDeclarations: this.functionDeclarations(),
               abortSignal: args.signal,
+              forceWorkspaceMutation,
             }),
           });
+          forceWorkspaceMutation = false;
         } catch (error: any) {
           if (args.signal?.aborted) throw new AgentRunCancelledError();
           console.log(args.id, " - ", error);
@@ -564,21 +680,6 @@ export class GeminiProvider {
               completedTaskIds,
             });
 
-            await prisma.conversationHistory.create({
-              data: {
-                contents: JSON.stringify(toolArgs),
-                from: "ASSISTANT",
-                toolCall: tool.declaration.name,
-                projectId: this.projectId,
-                type: "TOOL_CALL",
-                output: JSON.stringify({
-                  type: output.yield?.type,
-                  response: output.yield?.response,
-                }),
-                agentId: args.id,
-              },
-            });
-
             if (output.yield) {
               args.handler.onChunk?.({
                 type: output.yield.type,
@@ -599,6 +700,28 @@ export class GeminiProvider {
                 }
             }
 
+            await prisma.conversationHistory.create({
+              data: {
+                contents: JSON.stringify(toolArgs),
+                from: "ASSISTANT",
+                toolCall: tool.declaration.name,
+                projectId: this.projectId,
+                type: "TOOL_CALL",
+                output: serializeAuditPayload({
+                  response: output.response,
+                  yield: output.yield
+                    ? {
+                        type: output.yield.type,
+                        response: output.yield.response,
+                        uuid: output.yield.uuid,
+                      }
+                    : undefined,
+                  effects: output.effects,
+                }),
+                agentId: args.id,
+              },
+            });
+
             functionCallResponses.push({
               functionResponse: {
                 ...(functionCall.id && { id: functionCall.id }),
@@ -617,6 +740,27 @@ export class GeminiProvider {
             );
           } catch (error: any) {
             if (error instanceof AgentRunCancelledError) throw error;
+            const toolError =
+              error instanceof Error ? error.message : JSON.stringify(error);
+            await prisma.conversationHistory.create({
+              data: {
+                contents: JSON.stringify({
+                  args: functionArgs,
+                  context: {
+                    cwd: this.cwd,
+                    databaseProjectId: this.projectId,
+                    agentRunId: String(conversationRecord.id),
+                  },
+                }),
+                from: "ASSISTANT",
+                toolCall: toolName,
+                projectId: this.projectId,
+                type: "TOOL_CALL",
+                output: serializeAuditPayload({ error: toolError }),
+                errorMessage: toolError,
+                agentId: args.id,
+              },
+            });
             emitToolActivity(
               toolActivityId,
               tool,
@@ -629,10 +773,7 @@ export class GeminiProvider {
                 ...(functionCall.id && { id: functionCall.id }),
                 name: toolName,
                 response: {
-                  output:
-                    error instanceof Error
-                      ? error.message
-                      : JSON.stringify(error),
+                  output: toolError,
                 },
               },
             });
@@ -719,6 +860,59 @@ export class GeminiProvider {
           }
         }
 
+        // AUTO is the fast path. Classify only a terminal no-change response,
+        // then force a mutation tool on the next turn when confidence is high.
+        if (
+          !hasToolCall &&
+          args.id === "1" &&
+          !workspaceChanged &&
+          requestIntent === undefined
+        ) {
+          requestIntent = await abortable(
+            GeminiProvider.classifyRequestIntent(args.message, args.signal),
+            args.signal,
+          );
+          await this.persistRunEvent({
+            runId: conversationRecord.id,
+            agentId: args.id,
+            event: "intentClassification",
+            payload: requestIntent,
+          });
+        }
+
+        const mutationRequired =
+          requestIntent?.intent === "implementation" &&
+          requestIntent.confidence >= IMPLEMENTATION_CONFIDENCE_THRESHOLD;
+        if (!hasToolCall && mutationRequired && !workspaceChanged) {
+          withheldTurnText = "";
+          if (noMutationRetries >= MAX_NO_MUTATION_RETRIES) {
+            runStatus = "FAILED";
+            runError =
+              "The coding agent did not modify the frontend workspace after two enforced retries.";
+            args.handler.onChunk?.({ type: "error", response: runError });
+          } else {
+            noMutationRetries += 1;
+            forceWorkspaceMutation = true;
+            newMessage = [
+              {
+                text: "This implementation response was rejected because no workspace change succeeded. Use a workspace mutation tool now, make the requested frontend change, and verify it before completing. Do not answer with a plan or tutorial.",
+              },
+            ];
+            hasToolCall = true;
+            await this.persistRunEvent({
+              runId: conversationRecord.id,
+              agentId: args.id,
+              event: "mutationEnforcement",
+              payload: {
+                retry: noMutationRetries,
+                intent: requestIntent,
+              },
+            });
+          }
+        }
+
+        if (runStatus !== "RUNNING") break;
+
         // Every main request must finish against a healthy application. Changed
         // workspaces additionally pass the visual-quality completion review.
         if (!hasToolCall && args.id === "1") {
@@ -727,12 +921,16 @@ export class GeminiProvider {
               args.handler,
               workspaceChanged ? "completion" : "functional",
               args.signal,
+              {
+                runId: conversationRecord.id,
+                agentId: args.id,
+              },
             ),
             args.signal,
           );
           runtimeVerified = runtimeState?.status === "running";
 
-          const repairMessage = runtimeRepairMessage(runtimeState);
+          const repairMessage = await runtimeRepairMessage(runtimeState);
           if (repairMessage) {
             newMessage = [{ text: repairMessage }];
             hasToolCall = true;
@@ -823,7 +1021,7 @@ export class GeminiProvider {
         try {
           const sessionTokens =
             await GeminiProvider.geminiClient.models.countTokens({
-              model: "gemini-2.5-flash",
+              model: implementationModel,
               contents: history,
             });
 
@@ -884,7 +1082,7 @@ export class GeminiProvider {
             GeminiProvider.sessions[this.sessionKey]!.chat.getHistory();
           const sessionTokensAfter =
             await GeminiProvider.geminiClient.models.countTokens({
-              model: "gemini-2.5-flash",
+              model: implementationModel,
               contents: activeHistory,
             });
 

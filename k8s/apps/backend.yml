@@ -42,6 +42,10 @@ spec:
                   key: GCP_PROJECT_ID
             - name: RUNTIME_IMAGE_TAG
               value: latest
+            - name: GEMINI_IMPLEMENTATION_MODEL
+              value: gemini-3.5-flash
+            - name: GEMINI_SUPPORT_MODEL
+              value: gemini-2.5-flash
             - name: PROJECTS_BASE_URL
               value: http://project.tarun.co
             - name: CORS_ORIGINS

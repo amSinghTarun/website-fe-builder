@@ -14,8 +14,8 @@ export type PlanTask = { id: string; task: string };
 
 type RuntimeRepairDecision =
   | { action: "none" }
-  | { action: "retry"; message: string }
-  | { action: "blocked"; message: string };
+  | { action: "retry"; message: string; attempt: number; fingerprint: string }
+  | { action: "blocked"; message: string; attempt: number; fingerprint: string };
 
 // Emit one transient activity update for the frontend while a tool runs.
 export function emitToolActivity(
@@ -164,12 +164,16 @@ export function evaluateRuntimeRepair(
   if (attempts <= 3) {
     return {
       action: "retry",
+      attempt: attempts,
+      fingerprint,
       message: `${formatRuntimeObservation(runtimeState)}\n\nThe task cannot complete until this repairable application failure is resolved. Continue working.`,
     };
   }
 
   return {
     action: "blocked",
+    attempt: attempts,
+    fingerprint,
     message:
       "The generated application remains unhealthy after three automatic repair attempts.",
   };

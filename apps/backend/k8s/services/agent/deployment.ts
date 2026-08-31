@@ -110,6 +110,18 @@ export const agentDeploymentSpec = (databaseProjectId: string) => {
                   name: "WORKSPACE_HEALTH_PATH",
                   value: `/workspace/${runtimeId}/`,
                 },
+                {
+                  name: "GEMINI_IMPLEMENTATION_MODEL",
+                  value:
+                    process.env.GEMINI_IMPLEMENTATION_MODEL?.trim() ||
+                    "gemini-3.5-flash",
+                },
+                {
+                  name: "GEMINI_SUPPORT_MODEL",
+                  value:
+                    process.env.GEMINI_SUPPORT_MODEL?.trim() ||
+                    "gemini-2.5-flash",
+                },
                 { name: "PORT", value: "3000" },
                 {
                   name: "DATABASE_URL",
