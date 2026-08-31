@@ -17,6 +17,7 @@ import {
   getProjectRuntimeStatus,
   getClusterTopology,
   projectRuntimeRoutes,
+  AgentRunRegistry,
 } from "./helpers";
 import { checkAuth } from "./middleware";
 import "dotenv/config";
@@ -24,7 +25,6 @@ import { customAlphabet } from "nanoid";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { toRuntimeId } from "@sky/common";
-import { Readable } from "node:stream";
 
 const PORT = 3001;
 const AGENT_STARTUP_ATTEMPTS = 150;
@@ -78,14 +78,10 @@ async function openAgentStream(
   throw new Error(`Unable to reach the project agent: ${lastError}`);
 }
 
-const activeAgentRequests = new Map<string, AbortController>();
+const agentRuns = new AgentRunRegistry();
 
 async function stopAgent(databaseProjectId: string): Promise<boolean> {
-  const activeRequest = activeAgentRequests.get(databaseProjectId);
-  const stoppedBackendRequest = Boolean(
-    activeRequest && !activeRequest.signal.aborted,
-  );
-  activeRequest?.abort(new Error("Generation stopped by user"));
+  const stoppedBackendRequest = agentRuns.stop(databaseProjectId);
 
   const runtimeId = toRuntimeId(databaseProjectId);
   try {
@@ -605,54 +601,64 @@ app.post(
       });
     }
 
-    const currentRequest = activeAgentRequests.get(project.id);
-    if (currentRequest && !currentRequest.signal.aborted) {
+    if (agentRuns.isActive(project.id)) {
       return reply.code(409).send({
         status: "error",
         message: "A generation is already active for this project",
       });
     }
 
-    const requestController = new AbortController();
-    activeAgentRequests.set(project.id, requestController);
-    const abortOnClientDisconnect = () => {
-      requestController.abort(new Error("Client disconnected"));
-    };
-    request.raw.once("aborted", abortOnClientDisconnect);
-    reply.raw.once("close", abortOnClientDisconnect);
-
-    let agentResponse: Response;
     try {
-      agentResponse = await openAgentStream(
+      agentRuns.start(
         project.id,
-        request.body.message,
-        requestController.signal,
+        (signal) => openAgentStream(project.id, request.body.message, signal),
       );
     } catch (error) {
-      if (activeAgentRequests.get(project.id) === requestController) {
-        activeAgentRequests.delete(project.id);
-      }
-      request.raw.removeListener("aborted", abortOnClientDisconnect);
-      reply.raw.removeListener("close", abortOnClientDisconnect);
-      throw error;
+      return reply.code(409).send({
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
 
-    if (!agentResponse.body) {
-      activeAgentRequests.delete(project.id);
-      throw new Error("Agent returned an empty response stream");
+    const responseStream = agentRuns.subscribe(project.id);
+    if (!responseStream) throw new Error("Agent run could not be started");
+
+    return reply
+      .header("Content-Type", "text/event-stream")
+      .header("Cache-Control", "no-cache")
+      .header("X-Accel-Buffering", "no")
+      .send(responseStream);
+  },
+);
+
+app.get(
+  "/agentRunStream",
+  {
+    onRequest: checkAuth,
+    schema: {
+      querystring: z.object({
+        projectId: z.string(),
+      }),
+    },
+  },
+  async (request, reply) => {
+    const project = await prisma.project.findFirst({
+      where: {
+        id: request.query.projectId,
+        userId: request.userId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      return reply.code(404).send({
+        status: "error",
+        message: "Project not found",
+      });
     }
 
-    const responseStream = Readable.fromWeb(agentResponse.body as any);
-    const cleanup = () => {
-      request.raw.removeListener("aborted", abortOnClientDisconnect);
-      reply.raw.removeListener("close", abortOnClientDisconnect);
-      if (activeAgentRequests.get(project.id) === requestController) {
-        activeAgentRequests.delete(project.id);
-      }
-    };
-    responseStream.once("close", cleanup);
-    responseStream.once("end", cleanup);
-    responseStream.once("error", cleanup);
+    const responseStream = agentRuns.subscribe(project.id);
+    if (!responseStream) return reply.code(204).send();
 
     return reply
       .header("Content-Type", "text/event-stream")

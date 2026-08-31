@@ -400,20 +400,7 @@ export function App() {
   const selectedFile =
     projectFiles.find((file) => file.path === selectedFilePath) ?? null;
 
-  const streamAgentMessage = async (prompt: string, signal: AbortSignal) => {
-    const response = await fetch(apiUrl("/sendUserMessage"), {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId, message: prompt }),
-      signal,
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => null);
-      throw new Error(error?.message || "The project agent could not start");
-    }
-
+  const consumeAgentResponse = useCallback(async (response: Response) => {
     if (!response.body) throw new Error("The project agent returned no stream");
 
     const assistantId = createClientId();
@@ -541,7 +528,78 @@ export function App() {
         },
       ]);
     }
+  }, []);
+
+  const streamAgentMessage = async (prompt: string, signal: AbortSignal) => {
+    const response = await fetch(apiUrl("/sendUserMessage"), {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, message: prompt }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      throw new Error(error?.message || "The project agent could not start");
+    }
+
+    await consumeAgentResponse(response);
   };
+
+  // Reattach to an in-progress run after refresh without resending its prompt.
+  useEffect(() => {
+    if (!projectId || historyStatus !== "loaded") return;
+
+    const reconnectController = new AbortController();
+    let attached = false;
+
+    const reconnect = async () => {
+      try {
+        const response = await fetch(
+          apiUrl(
+            `/agentRunStream?projectId=${encodeURIComponent(projectId)}`,
+          ),
+          {
+            credentials: "include",
+            signal: reconnectController.signal,
+          },
+        );
+
+        if (response.status === 204) return;
+        if (!response.ok) {
+          const error = await response.json().catch(() => null);
+          throw new Error(error?.message || "Unable to reconnect to the agent");
+        }
+
+        attached = true;
+        generationAbortRef.current = reconnectController;
+        setAgentActivity(emptyAgentActivity);
+        setIsGenerating(true);
+        await consumeAgentResponse(response);
+        setPreviewRevision((current) => current + 1);
+      } catch (error) {
+        if (!reconnectController.signal.aborted) {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Unable to reconnect to the agent",
+          );
+        }
+      } finally {
+        if (attached) {
+          if (generationAbortRef.current === reconnectController) {
+            generationAbortRef.current = null;
+          }
+          setIsGenerating(false);
+          setIsStopping(false);
+        }
+      }
+    };
+
+    void reconnect();
+    return () => reconnectController.abort();
+  }, [consumeAgentResponse, historyStatus, projectId]);
 
   const sendPrompt = async (text: string) => {
     const trimmed = text.trim();
@@ -1001,12 +1059,25 @@ export function App() {
               >
                 <Code2 size={13} /> Code
               </button>
+              <div className="ml-2 min-w-0 flex-1">
+                {previewUrl && (
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={previewUrl}
+                    className="block truncate rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-500 transition hover:border-zinc-700 hover:text-cyan-300"
+                  >
+                    {previewUrl}
+                  </a>
+                )}
+              </div>
               {activeTab === "code" && (
                 <button
                   type="button"
                   onClick={() => void loadProjectFiles()}
                   disabled={loadingFiles || isGenerating}
-                  className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-zinc-500 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-zinc-500 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <RefreshCw
                     size={13}
@@ -1019,7 +1090,7 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => setPreviewRevision((current) => current + 1)}
-                  className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-zinc-500 transition hover:text-cyan-300"
+                  className="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-zinc-500 transition hover:text-cyan-300"
                 >
                   <RefreshCw size={13} />
                   Refresh preview
