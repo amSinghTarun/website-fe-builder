@@ -69,7 +69,7 @@ type ClusterTopologyData = {
 type Point = { x: number; y: number };
 
 const NODE_WIDTH = 360;
-const POD_HEIGHT = 88;
+const POD_HEIGHT = 112;
 const RESOURCE_WIDTH = 230;
 const RESOURCE_HEIGHT = 72;
 
@@ -130,6 +130,14 @@ function containerStateColor(
     return "#22c55e";
   if (state === "failed") return "#ef4444";
   return "#f59e0b";
+}
+
+function containerRoleLabel(
+  role: ClusterTopologyData["pods"][number]["containers"][number]["role"],
+): string {
+  if (role === "sidecar") return "sidecar";
+  if (role === "init") return "startup gate";
+  return "container";
 }
 
 function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
@@ -304,12 +312,12 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
             ) : pods.map((pod, podIndex) => {
               const podY = y + 94 + podIndex * (POD_HEIGHT + 10);
               const projectColor = colorForProject(pod.projectId);
-              const runningContainers = pod.containers.filter(
-                (container) => container.role !== "init",
-              );
-              const startupGates = pod.containers.filter(
-                (container) => container.role === "init",
-              );
+              const containerGap = 6;
+              const containerAreaWidth = NODE_WIDTH - 56;
+              const containerWidth = pod.containers.length > 0
+                ? (containerAreaWidth - containerGap * (pod.containers.length - 1)) /
+                  pod.containers.length
+                : containerAreaWidth;
               return (
                 <g key={pod.id}>
                   <title>{`${pod.name}\n${pod.owner ?? "No controller"}\n${pod.phase}, ${pod.restarts} restarts\n${pod.containers.map((container) => `${containerLabel(container)}: ${container.state}`).join("\n")}`}</title>
@@ -325,21 +333,53 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
                   <text x={x + NODE_WIDTH - 22} y={podY + 40} textAnchor="end" fill={projectColor.text} fontSize="8">
                     {pod.projectId?.slice(0, 8) ?? "PLATFORM"}
                   </text>
-                  <text x={x + 28} y={podY + 60} fill={projectColor.text} fontSize="8.5" fontWeight="600">
-                    {runningContainers.length > 0
-                      ? `Running: ${runningContainers.map(containerLabel).join(" + ")}`
-                      : "container details unavailable"}
-                  </text>
-                  {startupGates.length > 0 && (
-                    <text x={x + 28} y={podY + 76} fill="#71717a" fontSize="8">
-                      Startup: {startupGates.map((container) =>
-                        `${containerLabel(container)} ${container.state === "completed" ? "✓" : `· ${container.state}`}`
-                      ).join(" · ")}
+                  {pod.containers.length === 0 ? (
+                    <text x={x + 28} y={podY + 78} fill="#71717a" fontSize="8">
+                      Container details unavailable
                     </text>
-                  )}
-                  {pod.containers.map((container, containerIndex) => (
-                    <circle key={`${pod.id}-${container.name}`} cx={x + NODE_WIDTH - 28 - containerIndex * 9} cy={podY + 76} r="2.5" fill={containerStateColor(container.state)} />
-                  ))}
+                  ) : pod.containers.map((container, containerIndex) => {
+                    const containerX =
+                      x + 28 + containerIndex * (containerWidth + containerGap);
+                    const isStartupGate = container.role === "init";
+                    return (
+                      <g key={`${pod.id}-${container.name}`}>
+                        <rect
+                          x={containerX}
+                          y={podY + 55}
+                          width={containerWidth}
+                          height="42"
+                          rx="7"
+                          fill={isStartupGate ? "#111113" : "#0b171b"}
+                          stroke={isStartupGate ? "#71717a" : projectColor.stroke}
+                          strokeOpacity={isStartupGate ? "0.7" : "0.55"}
+                          strokeDasharray={isStartupGate ? "4 3" : undefined}
+                        />
+                        <circle
+                          cx={containerX + 10}
+                          cy={podY + 68}
+                          r="3"
+                          fill={containerStateColor(container.state)}
+                        />
+                        <text
+                          x={containerX + 18}
+                          y={podY + 71}
+                          fill="#e4e4e7"
+                          fontSize="7.5"
+                          fontWeight="700"
+                        >
+                          {displayName(containerLabel(container), 15)}
+                        </text>
+                        <text
+                          x={containerX + 10}
+                          y={podY + 88}
+                          fill={isStartupGate ? "#a1a1aa" : projectColor.text}
+                          fontSize="6.8"
+                        >
+                          {containerRoleLabel(container.role)} · {container.state}
+                        </text>
+                      </g>
+                    );
+                  })}
                 </g>
               );
             })}
