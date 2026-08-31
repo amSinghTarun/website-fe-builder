@@ -56,7 +56,7 @@ describe("buildClusterTopology", () => {
       projectId: "12345678-1234-1234-1234-123456789abc",
       pvcNames: ["sky-12345678-1234-1234-1234-123456789abc-pvc"],
       containers: [
-        { name: "workspace", role: "container", ready: true, restarts: 2 },
+        { name: "workspace", role: "container", state: "ready", ready: true, restarts: 2 },
       ],
     });
     expect(result.services[0]?.selectedPodIds).toEqual(["default/sky-12345678-1234-1234-1234-123456789abc-workspace-abc"]);
@@ -79,8 +79,8 @@ describe("buildClusterTopology", () => {
       status: {
         containerStatuses: [{ name: "agent", ready: true, restartCount: 0 }],
         initContainerStatuses: [
-          { name: "recovery-cron", ready: true, restartCount: 1 },
-          { name: "wait-for-workspace", ready: false, restartCount: 0 },
+          { name: "recovery-cron", ready: true, restartCount: 1, state: { running: {} } },
+          { name: "wait-for-workspace", ready: false, restartCount: 0, state: { terminated: { exitCode: 0 } } },
         ],
       },
     } as V1Pod;
@@ -93,9 +93,9 @@ describe("buildClusterTopology", () => {
     });
 
     expect(result.pods[0]?.containers).toEqual([
-      { name: "agent", role: "container", ready: true, restarts: 0 },
-      { name: "recovery-cron", role: "sidecar", ready: true, restarts: 1 },
-      { name: "wait-for-workspace", role: "init", ready: false, restarts: 0 },
+      { name: "agent", role: "container", state: "ready", ready: true, restarts: 0 },
+      { name: "recovery-cron", role: "sidecar", state: "ready", ready: true, restarts: 1 },
+      { name: "wait-for-workspace", role: "init", state: "completed", ready: false, restarts: 0 },
     ]);
   });
 

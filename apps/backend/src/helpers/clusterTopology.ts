@@ -34,6 +34,7 @@ export type ClusterTopology = {
     containers: Array<{
       name: string;
       role: "container" | "sidecar" | "init";
+      state: "ready" | "running" | "completed" | "waiting" | "failed";
       ready: boolean;
       restarts: number;
     }>;
@@ -98,6 +99,15 @@ export function buildClusterTopology(
       (init ? initContainerStatuses : containerStatuses).find(
         (status) => status.name === name,
       );
+    const stateFor = (
+      status: (typeof containerStatuses)[number] | undefined,
+    ): "ready" | "running" | "completed" | "waiting" | "failed" => {
+      if (status?.ready) return "ready";
+      if (status?.state?.running) return "running";
+      if (status?.state?.terminated)
+        return status.state.terminated.exitCode === 0 ? "completed" : "failed";
+      return "waiting";
+    };
     const pvcNames = (pod.spec?.volumes ?? []).flatMap((volume) =>
       volume.persistentVolumeClaim?.claimName
         ? [volume.persistentVolumeClaim.claimName]
@@ -129,6 +139,7 @@ export function buildClusterTopology(
           return {
             name: container.name,
             role: "container" as const,
+            state: stateFor(status),
             ready: status?.ready === true,
             restarts: status?.restartCount ?? 0,
           };
@@ -141,6 +152,7 @@ export function buildClusterTopology(
               container.restartPolicy === "Always"
                 ? ("sidecar" as const)
                 : ("init" as const),
+            state: stateFor(status),
             ready: status?.ready === true,
             restarts: status?.restartCount ?? 0,
           };

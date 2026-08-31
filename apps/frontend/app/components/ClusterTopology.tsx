@@ -38,6 +38,7 @@ type ClusterTopologyData = {
     containers: Array<{
       name: string;
       role: "container" | "sidecar" | "init";
+      state: "ready" | "running" | "completed" | "waiting" | "failed";
       ready: boolean;
       restarts: number;
     }>;
@@ -120,6 +121,15 @@ function containerLabel(
     .replace(/^sky-[0-9a-f-]+-/i, "")
     .replace(/-cron$/, "");
   return container.role === "sidecar" ? `${shortName} sidecar` : shortName;
+}
+
+function containerStateColor(
+  state: ClusterTopologyData["pods"][number]["containers"][number]["state"],
+): string {
+  if (state === "ready" || state === "running" || state === "completed")
+    return "#22c55e";
+  if (state === "failed") return "#ef4444";
+  return "#f59e0b";
 }
 
 function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
@@ -294,9 +304,15 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
             ) : pods.map((pod, podIndex) => {
               const podY = y + 94 + podIndex * (POD_HEIGHT + 10);
               const projectColor = colorForProject(pod.projectId);
+              const runningContainers = pod.containers.filter(
+                (container) => container.role !== "init",
+              );
+              const startupGates = pod.containers.filter(
+                (container) => container.role === "init",
+              );
               return (
                 <g key={pod.id}>
-                  <title>{`${pod.name}\n${pod.owner ?? "No controller"}\n${pod.phase}, ${pod.restarts} restarts\n${pod.containers.map((container) => `${containerLabel(container)}: ${container.ready ? "ready" : "not ready"}`).join("\n")}`}</title>
+                  <title>{`${pod.name}\n${pod.owner ?? "No controller"}\n${pod.phase}, ${pod.restarts} restarts\n${pod.containers.map((container) => `${containerLabel(container)}: ${container.state}`).join("\n")}`}</title>
                   <rect x={x + 16} y={podY} width={NODE_WIDTH - 32} height={POD_HEIGHT} rx="10" fill={projectColor.fill} stroke={projectColor.stroke} strokeOpacity="0.72" />
                   <rect x={x + 16} y={podY} width="4" height={POD_HEIGHT} rx="2" fill={podColor(pod)} />
                   <circle cx={x + 38} cy={podY + 22} r="8" fill={projectColor.fill} stroke={projectColor.stroke} />
@@ -309,19 +325,20 @@ function TopologyCanvas({ data }: { data: ClusterTopologyData }) {
                   <text x={x + NODE_WIDTH - 22} y={podY + 40} textAnchor="end" fill={projectColor.text} fontSize="8">
                     {pod.projectId?.slice(0, 8) ?? "PLATFORM"}
                   </text>
-                  <text x={x + 28} y={podY + 65} fill={projectColor.text} fontSize="8.5" fontWeight="600">
-                    {pod.containers.length > 0
-                      ? pod.containers.map(containerLabel).join("  +  ")
+                  <text x={x + 28} y={podY + 60} fill={projectColor.text} fontSize="8.5" fontWeight="600">
+                    {runningContainers.length > 0
+                      ? `Running: ${runningContainers.map(containerLabel).join(" + ")}`
                       : "container details unavailable"}
                   </text>
+                  {startupGates.length > 0 && (
+                    <text x={x + 28} y={podY + 76} fill="#71717a" fontSize="8">
+                      Startup: {startupGates.map((container) =>
+                        `${containerLabel(container)} ${container.state === "completed" ? "✓" : `· ${container.state}`}`
+                      ).join(" · ")}
+                    </text>
+                  )}
                   {pod.containers.map((container, containerIndex) => (
-                    <circle
-                      key={`${pod.id}-${container.name}`}
-                      cx={x + 28 + containerIndex * 9}
-                      cy={podY + 77}
-                      r="2.5"
-                      fill={container.ready ? "#22c55e" : "#f59e0b"}
-                    />
+                    <circle key={`${pod.id}-${container.name}`} cx={x + NODE_WIDTH - 28 - containerIndex * 9} cy={podY + 76} r="2.5" fill={containerStateColor(container.state)} />
                   ))}
                 </g>
               );
